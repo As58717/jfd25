@@ -30,6 +30,10 @@ namespace AVEncoder
             void* NvEncGetEncodePresetGUIDs = nullptr;
             void* NvEncGetEncodeProfileGUIDs = nullptr;
             void* NvEncGetEncodePresetConfig = nullptr;
+            void* NvEncCreateInputBuffer = nullptr;
+            void* NvEncDestroyInputBuffer = nullptr;
+            void* NvEncCreateBitstreamBuffer = nullptr;
+            void* NvEncDestroyBitstreamBuffer = nullptr;
             void* NvEncRegisterResource = nullptr;
             void* NvEncUnregisterResource = nullptr;
             void* NvEncMapInputResource = nullptr;
