@@ -36,19 +36,33 @@ public class AVEncoder : ModuleRules
 			PublicIncludePathModuleNames.Add("Vulkan");
 		}
 
-		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
-		{
-			PrivateDependencyModuleNames.AddRange(new string[] {
-				"D3D11RHI",
-				"D3D12RHI"
-			});
+                if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
+                {
+                        PrivateDependencyModuleNames.AddRange(new string[] {
+                                "D3D11RHI",
+                                "D3D12RHI"
+                        });
 
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11", "DX12");
+                        AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11", "DX12");
 
-			PublicSystemLibraries.AddRange(new string[] {
-				"mfplat.lib",
-				"mfuuid.lib",
-			});
+                        string ModuleRoot = ModuleDirectory;
+                        string InterfacePath = Path.Combine(ModuleRoot, "..", "Interface");
+                        if (Directory.Exists(InterfacePath))
+                        {
+                                PublicIncludePaths.Add(InterfacePath);
+                        }
+
+                        string LibPath = Path.Combine(ModuleRoot, "..", "Lib", "x64");
+                        if (Directory.Exists(LibPath))
+                        {
+                                PublicAdditionalLibraries.Add(Path.Combine(LibPath, "nvencodeapi.lib"));
+                                PublicAdditionalLibraries.Add(Path.Combine(LibPath, "nvcuvid.lib"));
+                        }
+
+                        PublicSystemLibraries.AddRange(new string[] {
+                                "mfplat.lib",
+                                "mfuuid.lib",
+                        });
 
                         PublicDelayLoadDLLs.Add("Mfreadwrite.dll");
 
