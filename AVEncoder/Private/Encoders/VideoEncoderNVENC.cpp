@@ -3,6 +3,10 @@
 #include "Encoders/VideoEncoderNVENC.h"
 
 #include "Encoders/NVENCCommon.h"
+#include "Encoders/NVEncodeAPILoader.h"
+#include "Encoders/NVENCCaps.h"
+#include "Encoders/NVENCParameters.h"
+#include "Encoders/NVENCSession.h"
 #include "Logging/LogMacros.h"
 #include "VideoEncoderFactory.h"
 
@@ -36,11 +40,28 @@ namespace AVEncoder
 
     bool FVideoEncoderNVENC::Setup(TSharedRef<FVideoEncoderInput> InInput, const FLayerConfig& InLayerConfig)
     {
-        if (!FNVENCCommon::EnsureLoaded())
+        if (!FNVEncodeAPILoader::Get().Load())
         {
-            UE_LOG(LogVideoEncoderNVENC, Warning, TEXT("Failed to load NVENC runtime – NVENC encoder is unavailable."));
+            UE_LOG(LogVideoEncoderNVENC, Warning, TEXT("Failed to load NVENC runtime – encoder is unavailable."));
             return false;
         }
+
+        if (!D3D11Input.Initialise())
+        {
+            UE_LOG(LogVideoEncoderNVENC, Warning, TEXT("Failed to initialise NVENC D3D11 input bridge."));
+            return false;
+        }
+
+        Session = MakeUnique<FNVENCSession>();
+        if (!Session->Open(ENVENCCodec::H264))
+        {
+            UE_LOG(LogVideoEncoderNVENC, Warning, TEXT("Failed to open NVENC session."));
+            Session.Reset();
+            return false;
+        }
+
+        CachedParameters = FNVENCParameterMapper::FromLayerConfig(InLayerConfig, ENVENCCodec::H264, ENVENCBufferFormat::NV12);
+        Session->Initialize(CachedParameters);
 
         bIsReady = true;
         return FVideoEncoder::Setup(InInput, InLayerConfig);
@@ -54,7 +75,7 @@ namespace AVEncoder
             return;
         }
 
-        UE_LOG(LogVideoEncoderNVENC, Warning, TEXT("NVENC encode request ignored – NVENC implementation is not available in this trimmed build."));
+        UE_LOG(LogVideoEncoderNVENC, Warning, TEXT("NVENC encode request ignored – trimmed build does not include the production encoder."));
 
         if (InFrame)
         {
@@ -64,11 +85,27 @@ namespace AVEncoder
 
     void FVideoEncoderNVENC::Flush()
     {
-        UE_LOG(LogVideoEncoderNVENC, Verbose, TEXT("NVENC Flush requested."));
+        if (Session)
+        {
+            Session->Flush();
+        }
+        else
+        {
+            UE_LOG(LogVideoEncoderNVENC, Verbose, TEXT("NVENC Flush requested without an active session."));
+        }
     }
 
     void FVideoEncoderNVENC::Shutdown()
     {
+        if (Session)
+        {
+            Session->Destroy();
+            Session.Reset();
+        }
+
+        D3D11Input.Shutdown();
+        AnnexB.Reset();
+        Bitstream.Unlock();
         bIsReady = false;
     }
 }

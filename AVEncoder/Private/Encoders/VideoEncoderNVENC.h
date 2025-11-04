@@ -4,6 +4,12 @@
 
 #include "VideoEncoder.h"
 
+#include "Encoders/NVENCAnnexB.h"
+#include "Encoders/NVENCBitstream.h"
+#include "Encoders/NVENCInputD3D11.h"
+#include "Encoders/NVENCParameters.h"
+#include "Encoders/NVENCSession.h"
+
 namespace AVEncoder
 {
     /**
@@ -30,6 +36,11 @@ namespace AVEncoder
 
     private:
         bool bIsReady = false;
+        TUniquePtr<FNVENCSession> Session;
+        FNVENCParameters CachedParameters;
+        FNVENCAnnexB AnnexB;
+        FNVENCBitstream Bitstream;
+        FNVENCInputD3D11 D3D11Input;
     };
 }
 
