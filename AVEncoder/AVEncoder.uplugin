@@ -7,22 +7,32 @@
   "Category": "Rendering",
   "CreatedBy": "OmniTools",
   "CreatedByURL": "https://example.com",
-  "DocsURL": "",
-  "MarketplaceURL": "",
-  "SupportURL": "",
+  "DocsURL": "https://example.com/docs/avencoder",
+  "MarketplaceURL": "https://example.com/marketplace/avencoder",
+  "SupportURL": "https://example.com/support/avencoder",
   "CanContainContent": false,
   "IsBetaVersion": true,
   "IsExperimentalVersion": false,
   "Installed": false,
   "SupportedTargetPlatforms": [
-    "Win64",
-    "Linux"
+    "Win64"
   ],
   "Modules": [
     {
       "Name": "AVEncoder",
       "Type": "Runtime",
-      "LoadingPhase": "PostEngineInit"
+      "LoadingPhase": "PostEngineInit",
+      "PlatformAllowList": [
+        "Win64"
+      ],
+      "AdditionalDependencies": [
+        "Core",
+        "RenderCore",
+        "RHI",
+        "Engine",
+        "SignalProcessing",
+        "CUDA"
+      ]
     }
   ],
   "Plugins": [
