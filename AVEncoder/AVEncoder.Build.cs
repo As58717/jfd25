@@ -50,7 +50,11 @@ public class AVEncoder : ModuleRules
 				"mfuuid.lib",
 			});
 
-			PublicDelayLoadDLLs.Add("Mfreadwrite.dll");
-		}
-	}
+                        PublicDelayLoadDLLs.Add("Mfreadwrite.dll");
+
+                        PublicDelayLoadDLLs.Add("nvEncodeAPI64.dll");
+
+                        PrivateDefinitions.Add("AVENCODER_VIDEO_ENCODER_AVAILABLE_NVENC=1");
+                }
+        }
 }

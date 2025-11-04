@@ -5,6 +5,10 @@
 #include "RHI.h"
 
 #include "Encoders/VideoEncoderH264_Dummy.h"
+#if defined(AVENCODER_VIDEO_ENCODER_AVAILABLE_NVENC)
+#include "Encoders/NVENCCommon.h"
+#include "Encoders/VideoEncoderNVENC.h"
+#endif
 
 namespace AVEncoder
 {
@@ -73,7 +77,11 @@ void FVideoEncoderFactory::RegisterDefaultCodecs()
 {
 
 #if defined(AVENCODER_VIDEO_ENCODER_AVAILABLE_H264_DUMMY)
-	FVideoEncoderH264_Dummy::Register(*this);
+        FVideoEncoderH264_Dummy::Register(*this);
+#endif
+
+#if defined(AVENCODER_VIDEO_ENCODER_AVAILABLE_NVENC)
+        FVideoEncoderNVENC::Register(*this);
 #endif
 
 }
