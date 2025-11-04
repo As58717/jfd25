@@ -6,6 +6,14 @@
 
 #include "Encoders/NVENCParameters.h"
 
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#endif
+#include "nvEncodeAPI.h"
+#if PLATFORM_WINDOWS
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
 namespace AVEncoder
 {
     /**
@@ -18,7 +26,7 @@ namespace AVEncoder
     public:
         FNVENCSession() = default;
 
-        bool Open(ENVENCCodec Codec);
+        bool Open(ENVENCCodec Codec, void* InDevice = nullptr, NV_ENC_DEVICE_TYPE InDeviceType = NV_ENC_DEVICE_TYPE_DIRECTX);
         bool Initialize(const FNVENCParameters& Parameters);
         bool Reconfigure(const FNVENCParameters& Parameters);
         void Flush();
@@ -29,10 +37,25 @@ namespace AVEncoder
 
         const FNVENCParameters& GetParameters() const { return CurrentParameters; }
 
+        void* GetEncoderHandle() const { return Encoder; }
+
+        const NV_ENCODE_API_FUNCTION_LIST& GetFunctionList() const { return FunctionList; }
+
+        const NV_ENC_INITIALIZE_PARAMS& GetInitializeParams() const { return InitializeParams; }
+        const NV_ENC_CONFIG& GetEncodeConfig() const { return EncodeConfig; }
+        NV_ENC_BUFFER_FORMAT GetNVBufferFormat() const { return NvBufferFormat; }
+
     private:
         bool bIsOpen = false;
         bool bIsInitialised = false;
         FNVENCParameters CurrentParameters;
+        void* Encoder = nullptr;
+        void* Device = nullptr;
+        NV_ENC_DEVICE_TYPE DeviceType = NV_ENC_DEVICE_TYPE_DIRECTX;
+        NV_ENCODE_API_FUNCTION_LIST FunctionList = {};
+        NV_ENC_INITIALIZE_PARAMS InitializeParams = {};
+        NV_ENC_CONFIG EncodeConfig = {};
+        NV_ENC_BUFFER_FORMAT NvBufferFormat = NV_ENC_BUFFER_FORMAT_UNDEFINED;
     };
 }
 
