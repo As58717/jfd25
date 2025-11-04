@@ -10,6 +10,12 @@
 #include "Encoders/NVENCParameters.h"
 #include "Encoders/NVENCSession.h"
 
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+struct ID3D11Device;
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
 namespace AVEncoder
 {
     /**
@@ -35,12 +41,19 @@ namespace AVEncoder
         virtual void Shutdown() override;
 
     private:
+        bool EncodeFrameD3D11(const FVideoEncoderInputFrame* InFrame, const FEncodeOptions& InOptions);
+        bool AcquireSequenceParameters();
+
         bool bIsReady = false;
         TUniquePtr<FNVENCSession> Session;
         FNVENCParameters CachedParameters;
         FNVENCAnnexB AnnexB;
         FNVENCBitstream Bitstream;
         FNVENCInputD3D11 D3D11Input;
+        TWeakPtr<FVideoEncoderInput> SourceInput;
+#if PLATFORM_WINDOWS
+        TRefCountPtr<ID3D11Device> EncoderDevice;
+#endif
     };
 }
 
