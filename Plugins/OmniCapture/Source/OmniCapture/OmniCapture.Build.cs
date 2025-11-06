@@ -11,6 +11,11 @@ public class OmniCapture : ModuleRules
         PCHUsage = ModuleRules.PCHUsageMode.NoPCHs;
         bUseUnity = false;
 
+        PublicIncludePaths.AddRange(new string[]
+        {
+            Path.Combine(ModuleDirectory, "Public"),
+        });
+
         PublicDependencyModuleNames.AddRange(new string[]
         {
             "Core",
@@ -83,6 +88,7 @@ public class OmniCapture : ModuleRules
             string interfaceDirectory = Path.Combine(rootDirectory, "Interface");
             if (Directory.Exists(interfaceDirectory))
             {
+                PublicIncludePaths.Add(interfaceDirectory);
                 PublicSystemIncludePaths.Add(interfaceDirectory);
             }
 

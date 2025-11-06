@@ -18,6 +18,10 @@ public class AVEncoder : ModuleRules
 
 		// PrecompileForTargets = PrecompileTargetsType.None;
 
+		PublicIncludePaths.AddRange(new string[] {
+			Path.Combine(ModuleDirectory, "Public")
+		});
+
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Engine",
 			"SignalProcessing"
@@ -36,12 +40,12 @@ public class AVEncoder : ModuleRules
 			PublicIncludePathModuleNames.Add("Vulkan");
 		}
 
-                if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
-                {
-                        PrivateDependencyModuleNames.AddRange(new string[] {
-                                "D3D11RHI",
-                                "D3D12RHI"
-                        });
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] {
+				"D3D11RHI",
+				"D3D12RHI"
+			});
 
                         AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11", "DX12");
 
@@ -50,6 +54,7 @@ public class AVEncoder : ModuleRules
                         if (Directory.Exists(InterfacePath))
                         {
                                 PublicIncludePaths.Add(InterfacePath);
+                                PublicSystemIncludePaths.Add(InterfacePath);
                         }
 
                         string LibPath = Path.Combine(ModuleRoot, "..", "Lib", "x64");
