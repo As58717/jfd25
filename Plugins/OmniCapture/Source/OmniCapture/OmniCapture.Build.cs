@@ -84,9 +84,9 @@ public class OmniCapture : ModuleRules
 
             bool bWithNvenc = false;
 
-            string rootDirectory = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../../../"));
-            string interfaceDirectory = Path.Combine(rootDirectory, "Interface");
-            string libDirectory = Path.Combine(rootDirectory, "Lib", "x64");
+            string nvencDirectory = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../ThirdParty/NVENC"));
+            string interfaceDirectory = Path.Combine(nvencDirectory, "Interface");
+            string libDirectory = Path.Combine(nvencDirectory, "Lib", "Win64");
 
             string nvencHeader = Path.Combine(interfaceDirectory, "nvEncodeAPI.h");
             string nvencLib = Path.Combine(libDirectory, "nvencodeapi.lib");
