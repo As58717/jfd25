@@ -2,6 +2,8 @@
 
 #pragma once
 
+#if WITH_OMNI_NVENC
+
 #include "CoreMinimal.h"
 
 #include "NVENC/NVENCParameters.h"
@@ -60,4 +62,6 @@ namespace OmniNVENC
         NV_ENC_BUFFER_FORMAT NvBufferFormat = NV_ENC_BUFFER_FORMAT_UNDEFINED;
     };
 }
+
+#endif // WITH_OMNI_NVENC
 

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#if WITH_OMNI_NVENC
+
 #include "CoreMinimal.h"
 
 #if PLATFORM_WINDOWS
@@ -45,4 +47,6 @@ namespace OmniNVENC
         bool bIsLocked = false;
     };
 }
+
+#endif // WITH_OMNI_NVENC
 

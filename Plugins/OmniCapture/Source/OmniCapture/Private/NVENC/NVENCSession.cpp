@@ -2,6 +2,8 @@
 
 #include "NVENC/NVENCSession.h"
 
+#if WITH_OMNI_NVENC
+
 #include "NVENC/NVENCCommon.h"
 #include "NVENC/NVENCDefs.h"
 #include "NVENC/NVENCParameters.h"
@@ -439,4 +441,6 @@ namespace OmniNVENC
 #endif
     }
 }
+
+#endif // WITH_OMNI_NVENC
 

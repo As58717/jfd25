@@ -2,6 +2,8 @@
 
 #include "NVENC/NVENCInputD3D12.h"
 
+#if WITH_OMNI_NVENC
+
 #include "NVENC/NVENCInputD3D11.h"
 #include "NVENC/NVENCSession.h"
 #include "Logging/LogMacros.h"
@@ -326,5 +328,6 @@ namespace OmniNVENC
 #else
     FNVENCInputD3D12::FNVENCInputD3D12() = default;
 #endif
+#endif // WITH_OMNI_NVENC
 }
 

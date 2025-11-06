@@ -2,6 +2,8 @@
 
 #pragma once
 
+#if WITH_OMNI_NVENC
+
 #include "CoreMinimal.h"
 #include "Containers/Map.h"
 
@@ -66,4 +68,6 @@ namespace OmniNVENC
     };
 #endif
 }
+
+#endif // WITH_OMNI_NVENC
 
