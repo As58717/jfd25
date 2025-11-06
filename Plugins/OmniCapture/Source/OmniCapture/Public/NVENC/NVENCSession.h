@@ -32,6 +32,8 @@ namespace OmniNVENC
         void Flush();
         void Destroy();
 
+        bool GetSequenceParams(TArray<uint8>& OutData);
+
         bool IsOpen() const { return bIsOpen; }
         bool IsInitialised() const { return bIsInitialised; }
 

@@ -15,6 +15,7 @@ namespace OmniNVENC
 
         /** Returns cached codec configuration data to be emitted with the first packet. */
         const TArray<uint8>& GetCodecConfig() const { return CodecConfig; }
+        bool HasCodecConfig() const { return CodecConfig.Num() > 0; }
 
         /**
          * Updates the cached configuration.  The trimmed build has no access to the

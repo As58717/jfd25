@@ -9,6 +9,7 @@
 #include "Logging/LogMacros.h"
 
 #include "Misc/ScopeExit.h"
+#include "Math/UnrealMathUtility.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNVENCSession, Log, All);
 
@@ -364,6 +365,68 @@ namespace OmniNVENC
         FunctionList = {};
 #endif
         CurrentParameters = FNVENCParameters();
+    }
+
+    bool FNVENCSession::GetSequenceParams(TArray<uint8>& OutData)
+    {
+#if !PLATFORM_WINDOWS
+        return false;
+#else
+        if (!bIsInitialised || !Encoder)
+        {
+            return false;
+        }
+
+        using TNvEncGetSequenceParams = NVENCSTATUS(NVENCAPI*)(void*, NV_ENC_SEQUENCE_PARAM_PAYLOAD*);
+        TNvEncGetSequenceParams GetSequenceParamsFn = FunctionList.nvEncGetSequenceParams;
+        if (!GetSequenceParamsFn)
+        {
+            UE_LOG(LogNVENCSession, Warning, TEXT("NvEncGetSequenceParams is unavailable in this NVENC runtime."));
+            return false;
+        }
+
+        uint32 OutputSize = 0;
+        TArray<uint8> Buffer;
+        Buffer.SetNumZeroed(1024);
+
+        NV_ENC_SEQUENCE_PARAM_PAYLOAD Payload = {};
+        Payload.version = NV_ENC_SEQUENCE_PARAM_PAYLOAD_VER;
+        Payload.inBufferSize = Buffer.Num();
+        Payload.spsppsBuffer = Buffer.GetData();
+        Payload.outSPSPPSPayloadSize = &OutputSize;
+
+        NVENCSTATUS Status = GetSequenceParamsFn(Encoder, &Payload);
+        if (Status != NV_ENC_SUCCESS)
+        {
+            UE_LOG(LogNVENCSession, Warning, TEXT("NvEncGetSequenceParams failed: %s"), *FNVENCDefs::StatusToString(Status));
+            return false;
+        }
+
+        if (OutputSize == 0)
+        {
+            return false;
+        }
+
+        if (OutputSize > static_cast<uint32>(Buffer.Num()))
+        {
+            Buffer.SetNumZeroed(OutputSize);
+            Payload.inBufferSize = Buffer.Num();
+            Payload.spsppsBuffer = Buffer.GetData();
+
+            Status = GetSequenceParamsFn(Encoder, &Payload);
+            if (Status != NV_ENC_SUCCESS)
+            {
+                UE_LOG(LogNVENCSession, Warning, TEXT("NvEncGetSequenceParams failed on resized buffer: %s"), *FNVENCDefs::StatusToString(Status));
+                return false;
+            }
+
+            OutputSize = FMath::Min<uint32>(OutputSize, static_cast<uint32>(Buffer.Num()));
+        }
+
+        Buffer.SetNum(OutputSize);
+        OutData = MoveTemp(Buffer);
+        return true;
+#endif
     }
 }
 
