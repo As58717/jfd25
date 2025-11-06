@@ -65,7 +65,10 @@ namespace OmniNVENC
             return false;
         }
 
-        auto CloseSession = MakeScopeExit([&Session]() { Session.Destroy(); });
+        ON_SCOPE_EXIT
+        {
+            Session.Destroy();
+        };
 
         using TNvEncGetEncodeCaps = NVENCSTATUS(NVENCAPI*)(void*, GUID, NV_ENC_CAPS_PARAM*, int*);
         TNvEncGetEncodeCaps GetEncodeCapsFn = Session.GetFunctionList().nvEncGetEncodeCaps;

@@ -3,8 +3,26 @@
 #include "Encoders/NVEncodeAPILoader.h"
 
 #include "Encoders/NVENCCommon.h"
+
+#include "Containers/StringConv.h"
 #include "HAL/PlatformProcess.h"
 #include "Logging/LogMacros.h"
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#endif
+#include "nvEncodeAPI.h"
+#if PLATFORM_WINDOWS
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
+#ifndef UE_NVENC_HAS_FLUSH_FUNCTION
+#if defined(NVENCAPI_MAJOR_VERSION) && NVENCAPI_MAJOR_VERSION < 12
+#define UE_NVENC_HAS_FLUSH_FUNCTION 1
+#else
+#define UE_NVENC_HAS_FLUSH_FUNCTION 0
+#endif
+#endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogNVEncodeAPILoader, Log, All);
 
@@ -33,7 +51,8 @@ namespace AVEncoder
                     continue;
                 }
 
-                *Entry.Target = FPlatformProcess::GetDllExport(LibraryHandle, Entry.Name);
+                const auto EntryNameWide = StringCast<TCHAR>(Entry.Name);
+                *Entry.Target = FPlatformProcess::GetDllExport(LibraryHandle, EntryNameWide.Get());
                 if (!*Entry.Target)
                 {
                     UE_LOG(LogNVEncodeAPILoader, Verbose, TEXT("Failed to resolve NVENC export '%s'."), ANSI_TO_TCHAR(Entry.Name));
@@ -87,7 +106,9 @@ namespace AVEncoder
             { "NvEncReconfigureEncoder", &Functions.NvEncReconfigureEncoder },
             { "NvEncEncodePicture", &Functions.NvEncEncodePicture },
             { "NvEncDestroyEncoder", &Functions.NvEncDestroyEncoder },
+#if UE_NVENC_HAS_FLUSH_FUNCTION
             { "NvEncFlushEncoderQueue", &Functions.NvEncFlushEncoderQueue },
+#endif
             { "NvEncGetEncodeCaps", &Functions.NvEncGetEncodeCaps },
             { "NvEncGetEncodePresetGUIDs", &Functions.NvEncGetEncodePresetGUIDs },
             { "NvEncGetEncodeProfileGUIDs", &Functions.NvEncGetEncodeProfileGUIDs },
@@ -138,7 +159,9 @@ namespace AVEncoder
             { "NvEncReconfigureEncoder", const_cast<void**>(&Functions.NvEncReconfigureEncoder) },
             { "NvEncEncodePicture", const_cast<void**>(&Functions.NvEncEncodePicture) },
             { "NvEncDestroyEncoder", const_cast<void**>(&Functions.NvEncDestroyEncoder) },
+#if UE_NVENC_HAS_FLUSH_FUNCTION
             { "NvEncFlushEncoderQueue", const_cast<void**>(&Functions.NvEncFlushEncoderQueue) },
+#endif
             { "NvEncGetEncodeCaps", const_cast<void**>(&Functions.NvEncGetEncodeCaps) },
             { "NvEncGetEncodePresetGUIDs", const_cast<void**>(&Functions.NvEncGetEncodePresetGUIDs) },
             { "NvEncGetEncodeProfileGUIDs", const_cast<void**>(&Functions.NvEncGetEncodeProfileGUIDs) },
