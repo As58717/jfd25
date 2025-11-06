@@ -77,9 +77,13 @@ private:
     OmniNVENC::FNVENCBitstream Bitstream;
     OmniNVENC::FNVENCInputD3D11 D3D11Input;
     OmniNVENC::FNVENCInputD3D12 D3D12Input;
+    OmniNVENC::FNVENCAnnexB AnnexB;
     OmniNVENC::FNVENCParameters ActiveParameters;
     FCriticalSection EncoderCS;
     TUniquePtr<IFileHandle> BitstreamFile;
+    bool bAnnexBHeaderWritten = false;
+
+    bool WriteAnnexBHeader();
 #endif
 };
 

@@ -488,7 +488,25 @@ bool FOmniCaptureNVENCEncoder::SupportsColorFormat(EOmniCaptureColorFormat Forma
 bool FOmniCaptureNVENCEncoder::SupportsZeroCopyRHI()
 {
 #if PLATFORM_WINDOWS
-    return GDynamicRHI && GDynamicRHI->GetInterfaceType() == ERHIInterfaceType::D3D11;
+    if (!GDynamicRHI)
+    {
+        return false;
+    }
+
+    const ERHIInterfaceType InterfaceType = GDynamicRHI->GetInterfaceType();
+#if WITH_D3D11_RHI
+    if (InterfaceType == ERHIInterfaceType::D3D11)
+    {
+        return true;
+    }
+#endif
+#if WITH_D3D12_RHI
+    if (InterfaceType == ERHIInterfaceType::D3D12)
+    {
+        return true;
+    }
+#endif
+    return false;
 #else
     return false;
 #endif
@@ -528,6 +546,11 @@ void FOmniCaptureNVENCEncoder::Initialize(const FOmniCaptureSettings& Settings, 
 
     LastErrorMessage.Reset();
     bInitialized = false;
+
+#if OMNI_WITH_NVENC
+    AnnexB.Reset();
+    bAnnexBHeaderWritten = false;
+#endif
 
     const FString FileName = FString::Printf(TEXT("%s.%s"), *Settings.OutputFileName, Settings.Codec == EOmniCaptureCodec::HEVC ? TEXT("h265") : TEXT("h264"));
     OutputFilePath = FPaths::Combine(OutputDirectory, FileName);
@@ -614,11 +637,21 @@ namespace
         return Texture.IsValid() ? static_cast<ID3D11Texture2D*>(Texture->GetNativeResource()) : nullptr;
     }
 
-    bool EncodeFrameInternal(FOmniCaptureNVENCEncoder& Encoder, const FOmniCaptureFrame& Frame)
+#if WITH_D3D12_RHI
+    ID3D12Resource* GetD3D12ResourceFromRHI(const FTextureRHIRef& Texture)
+    {
+        return Texture.IsValid() ? static_cast<ID3D12Resource*>(Texture->GetNativeResource()) : nullptr;
+    }
+#endif
+
+#if WITH_D3D11_RHI
+    bool EncodeFrameD3D11(FOmniCaptureNVENCEncoder& Encoder, const FOmniCaptureFrame& Frame)
     {
         ID3D11Texture2D* Texture = GetD3D11TextureFromRHI(Frame.Texture);
         if (!Texture)
         {
+            Encoder.LastErrorMessage = TEXT("D3D11 texture was unavailable for NVENC capture.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
             return false;
         }
 
@@ -662,7 +695,16 @@ namespace
                 return false;
             }
 
+            if (!Encoder.WriteAnnexBHeader())
+            {
+                UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("NVENC did not supply Annex B headers prior to first frame."));
+            }
+
             UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC session initialised (%dx%d)."), Encoder.ActiveParameters.Width, Encoder.ActiveParameters.Height);
+        }
+        else if (!Encoder.bAnnexBHeaderWritten)
+        {
+            Encoder.WriteAnnexBHeader();
         }
 
         if (!Encoder.D3D11Input.RegisterResource(Texture))
@@ -733,6 +775,194 @@ namespace
         Encoder.D3D11Input.UnmapResource(MappedInput);
         return true;
     }
+#endif
+
+#if WITH_D3D12_RHI
+    bool EncodeFrameD3D12(FOmniCaptureNVENCEncoder& Encoder, const FOmniCaptureFrame& Frame)
+    {
+        ID3D12Resource* Resource = GetD3D12ResourceFromRHI(Frame.Texture);
+        if (!Resource)
+        {
+            Encoder.LastErrorMessage = TEXT("D3D12 resource was unavailable for NVENC capture.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            return false;
+        }
+
+        TRefCountPtr<ID3D12Device> Device12;
+        HRESULT DeviceResult = Resource->GetDevice(IID_PPV_ARGS(Device12.GetInitReference()));
+        if (FAILED(DeviceResult) || !Device12.IsValid())
+        {
+            Encoder.LastErrorMessage = TEXT("Unable to retrieve D3D12 device from capture texture.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s (0x%08x)."), *Encoder.LastErrorMessage, DeviceResult);
+            return false;
+        }
+
+        if (!Encoder.D3D12Input.IsInitialised())
+        {
+            if (!Encoder.D3D12Input.Initialise(Device12.GetReference()))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to initialise NVENC D3D12 bridge.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+        }
+
+        ID3D11Device* BridgeDevice = Encoder.D3D12Input.GetD3D11Device();
+        if (!BridgeDevice)
+        {
+            Encoder.LastErrorMessage = TEXT("D3D11-on-12 bridge device is unavailable for NVENC capture.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            return false;
+        }
+
+        if (!Encoder.EncoderSession.IsOpen())
+        {
+            if (!Encoder.EncoderSession.Open(Encoder.ActiveParameters.Codec, BridgeDevice, NV_ENC_DEVICE_TYPE_DIRECTX))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to open NVENC session through D3D12 bridge.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.EncoderSession.Initialize(Encoder.ActiveParameters))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to initialise NVENC session.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.Bitstream.Initialize(Encoder.EncoderSession.GetEncoderHandle(), Encoder.EncoderSession.GetFunctionList()))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to create NVENC bitstream buffer.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.D3D12Input.BindSession(Encoder.EncoderSession))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to bind NVENC session to D3D12 bridge.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.WriteAnnexBHeader())
+            {
+                UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("NVENC did not provide Annex B headers before first D3D12 frame."));
+            }
+
+            UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC session initialised via D3D12 bridge (%dx%d)."), Encoder.ActiveParameters.Width, Encoder.ActiveParameters.Height);
+        }
+        else
+        {
+            if (!Encoder.D3D12Input.IsSessionBound() && !Encoder.D3D12Input.BindSession(Encoder.EncoderSession))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to rebind NVENC session to D3D12 bridge.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.bAnnexBHeaderWritten)
+            {
+                Encoder.WriteAnnexBHeader();
+            }
+        }
+
+        if (!Encoder.D3D12Input.RegisterResource(Resource))
+        {
+            Encoder.LastErrorMessage = TEXT("Failed to register D3D12 resource with NVENC.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            return false;
+        }
+
+        NV_ENC_INPUT_PTR MappedInput = nullptr;
+        if (!Encoder.D3D12Input.MapResource(Resource, MappedInput) || !MappedInput)
+        {
+            Encoder.LastErrorMessage = TEXT("Failed to map D3D12 resource for NVENC encoding.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            return false;
+        }
+
+        NV_ENC_PIC_PARAMS PicParams = {};
+        PicParams.version = NV_ENC_PIC_PARAMS_VER;
+        PicParams.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
+        PicParams.inputBuffer = MappedInput;
+        PicParams.bufferFmt = Encoder.EncoderSession.GetNVBufferFormat();
+        PicParams.inputWidth = Encoder.ActiveParameters.Width;
+        PicParams.inputHeight = Encoder.ActiveParameters.Height;
+        PicParams.outputBitstream = Encoder.Bitstream.GetBitstreamBuffer();
+        PicParams.inputTimeStamp = static_cast<uint64>(Frame.Metadata.Timecode * 1'000'000.0);
+        PicParams.frameIdx = Frame.Metadata.FrameIndex;
+        if (Frame.Metadata.bKeyFrame)
+        {
+            PicParams.encodePicFlags |= NV_ENC_PIC_FLAG_FORCEINTRA;
+        }
+
+        auto EncodePicture = Encoder.EncoderSession.GetFunctionList().nvEncEncodePicture;
+        if (!EncodePicture)
+        {
+            Encoder.LastErrorMessage = TEXT("NVENC function table missing nvEncEncodePicture.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            Encoder.D3D12Input.UnmapResource(MappedInput);
+            return false;
+        }
+
+        NVENCSTATUS Status = EncodePicture(Encoder.EncoderSession.GetEncoderHandle(), &PicParams);
+        if (Status != NV_ENC_SUCCESS)
+        {
+            Encoder.LastErrorMessage = FString::Printf(TEXT("nvEncEncodePicture failed: %s"), *FNVENCDefs::StatusToString(Status));
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            Encoder.D3D12Input.UnmapResource(MappedInput);
+            return false;
+        }
+
+        void* BitstreamData = nullptr;
+        int32 BitstreamSize = 0;
+        if (!Encoder.Bitstream.Lock(BitstreamData, BitstreamSize))
+        {
+            Encoder.LastErrorMessage = TEXT("Failed to lock NVENC bitstream.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            Encoder.D3D12Input.UnmapResource(MappedInput);
+            return false;
+        }
+
+        OmniNVENC::FNVENCEncodedPacket Packet;
+        if (Encoder.Bitstream.ExtractPacket(Packet) && Packet.Data.Num() > 0 && Encoder.BitstreamFile)
+        {
+            Encoder.BitstreamFile->Write(Packet.Data.GetData(), Packet.Data.Num());
+        }
+
+        Encoder.Bitstream.Unlock();
+        Encoder.D3D12Input.UnmapResource(MappedInput);
+        return true;
+    }
+#endif
+
+    bool EncodeFrameInternal(FOmniCaptureNVENCEncoder& Encoder, const FOmniCaptureFrame& Frame)
+    {
+        if (!GDynamicRHI)
+        {
+            return false;
+        }
+
+        const ERHIInterfaceType InterfaceType = GDynamicRHI->GetInterfaceType();
+
+#if WITH_D3D11_RHI
+        if (InterfaceType == ERHIInterfaceType::D3D11)
+        {
+            return EncodeFrameD3D11(Encoder, Frame);
+        }
+#endif
+
+#if WITH_D3D12_RHI
+        if (InterfaceType == ERHIInterfaceType::D3D12)
+        {
+            return EncodeFrameD3D12(Encoder, Frame);
+        }
+#endif
+
+        UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("NVENC capture is not implemented for RHI interface %d."), static_cast<int32>(InterfaceType));
+        return false;
+    }
 }
 #endif
 
@@ -783,9 +1013,44 @@ void FOmniCaptureNVENCEncoder::Finalize()
     D3D12Input.Shutdown();
     EncoderSession.Flush();
     EncoderSession.Destroy();
+    AnnexB.Reset();
+    bAnnexBHeaderWritten = false;
 #endif
 
     bInitialized = false;
     LastErrorMessage.Reset();
 }
+
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+bool FOmniCaptureNVENCEncoder::WriteAnnexBHeader()
+{
+    if (bAnnexBHeaderWritten || !EncoderSession.IsInitialised())
+    {
+        return bAnnexBHeaderWritten;
+    }
+
+    TArray<uint8> SequenceData;
+    if (!EncoderSession.GetSequenceParams(SequenceData) || SequenceData.Num() == 0)
+    {
+        return false;
+    }
+
+    AnnexB.SetCodecConfig(SequenceData);
+    const TArray<uint8>& Header = AnnexB.GetCodecConfig();
+    if (Header.Num() == 0 || !BitstreamFile)
+    {
+        return false;
+    }
+
+    BitstreamFile->Write(Header.GetData(), Header.Num());
+    bAnnexBHeaderWritten = true;
+    UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("Wrote NVENC Annex B header (%d bytes)."), Header.Num());
+    return true;
+}
+#else
+bool FOmniCaptureNVENCEncoder::WriteAnnexBHeader()
+{
+    return false;
+}
+#endif
 
