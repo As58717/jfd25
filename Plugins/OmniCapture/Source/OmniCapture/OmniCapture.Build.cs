@@ -71,8 +71,6 @@ public class OmniCapture : ModuleRules
 
         if (Target.Platform == UnrealTargetPlatform.Win64)
         {
-            PublicDependencyModuleNames.Add("AVEncoder");
-
             PrivateDependencyModuleNames.AddRange(new string[]
             {
                 "D3D11RHI",
@@ -80,6 +78,23 @@ public class OmniCapture : ModuleRules
             });
 
             PrivateDefinitions.Add("WITH_OMNI_NVENC=1");
+
+            string rootDirectory = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../../../"));
+            string interfaceDirectory = Path.Combine(rootDirectory, "Interface");
+            if (Directory.Exists(interfaceDirectory))
+            {
+                PublicSystemIncludePaths.Add(interfaceDirectory);
+            }
+
+            string libDirectory = Path.Combine(rootDirectory, "Lib", "x64");
+            if (Directory.Exists(libDirectory))
+            {
+                PublicAdditionalLibraries.Add(Path.Combine(libDirectory, "nvencodeapi.lib"));
+                PublicAdditionalLibraries.Add(Path.Combine(libDirectory, "nvcuvid.lib"));
+            }
+
+            PublicAdditionalLibraries.Add("d3d11.lib");
+            PublicDelayLoadDLLs.Add("nvEncodeAPI64.dll");
 
             // Ensure the expected project binaries directory exists before the linker writes outputs.
             if (Target.ProjectFile != null)
