@@ -6,14 +6,16 @@
 #include "HAL/PlatformProcess.h"
 #include "Misc/EngineVersionComparison.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
+#include "Misc/ScopeExit.h"
 #include "Modules/ModuleManager.h"
 #include "OmniCaptureTypes.h"
-#include "Misc/ScopeLock.h"
 #include "Math/UnrealMathUtility.h"
 #include "PixelFormat.h"
 #include "RHI.h"
 #include "UObject/UnrealType.h"
 #include "Logging/LogMacros.h"
+#include "Templates/RefCounting.h"
 #if __has_include("RHIAdapter.h")
 #include "RHIAdapter.h"
 #define OMNI_HAS_RHI_ADAPTER 1
@@ -22,43 +24,32 @@
 #endif
 #include "GenericPlatform/GenericPlatformDriver.h"
 #include "Interfaces/IPluginManager.h"
-#if PLATFORM_WINDOWS
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include "Windows/PreWindowsApi.h"
-#include <windows.h>
-#include "Windows/PostWindowsApi.h"
-#include "Windows/HideWindowsPlatformTypes.h"
-#endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogOmniCaptureNVENC, Log, All);
 
-#if OMNI_WITH_AVENCODER
-#include "RHIResources.h"
+#if OMNI_WITH_NVENC
 #include "RHICommandList.h"
+#include "RHIResources.h"
+#if PLATFORM_WINDOWS && WITH_D3D11_RHI
+#include "D3D11RHI.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/PreWindowsApi.h"
+#include <d3d11.h>
+#include "Windows/PostWindowsApi.h"
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+#if PLATFORM_WINDOWS && WITH_D3D12_RHI
+#include "D3D12RHI.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <d3d12.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
 #endif
 
 namespace
 {
-#if PLATFORM_WINDOWS
-    #define OMNI_NVENCAPI __stdcall
-#else
-    #define OMNI_NVENCAPI
-#endif
-
-#if OMNI_WITH_AVENCODER
-    OmniAVEncoder::EVideoFormat ToVideoFormat(EOmniCaptureColorFormat Format)
-    {
-        switch (Format)
-        {
-        case EOmniCaptureColorFormat::NV12:
-            return OmniAVEncoder::EVideoFormat::NV12;
-        case EOmniCaptureColorFormat::P010:
-            return OmniAVEncoder::EVideoFormat::P010;
-        case EOmniCaptureColorFormat::BGRA:
-        default:
-            return OmniAVEncoder::EVideoFormat::BGRA8;
-        }
-    }
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    using namespace OmniNVENC;
 
     struct FNVENCHardwareProbeResult
     {
@@ -80,21 +71,7 @@ namespace
         FString HardwareFailureReason;
     };
 
-    using FNvEncodeAPIGetMaxSupportedVersion = uint32(OMNI_NVENCAPI*)(uint32*);
-
     FCriticalSection& GetProbeCacheMutex()
-    {
-        static FCriticalSection Mutex;
-        return Mutex;
-    }
-
-    FCriticalSection& GetDllOverrideMutex()
-    {
-        static FCriticalSection Mutex;
-        return Mutex;
-    }
-
-    FCriticalSection& GetModuleOverrideMutex()
     {
         static FCriticalSection Mutex;
         return Mutex;
@@ -124,30 +101,6 @@ namespace
         return OverridePath;
     }
 
-    bool& GetAutoDetectModuleAttempted()
-    {
-        static bool bAttempted = false;
-        return bAttempted;
-    }
-
-    FString& GetAutoDetectedModulePath()
-    {
-        static FString CachedPath;
-        return CachedPath;
-    }
-
-    bool& GetAutoDetectDllAttempted()
-    {
-        static bool bAttempted = false;
-        return bAttempted;
-    }
-
-    FString& GetAutoDetectedDllPath()
-    {
-        static FString CachedPath;
-        return CachedPath;
-    }
-
     FString NormalizePath(const FString& InPath)
     {
         FString Result = InPath;
@@ -160,486 +113,230 @@ namespace
         return Result;
     }
 
-#if PLATFORM_WINDOWS
-    FString GetSystem32DirectoryFromAPI()
+    FString ResolveModuleOverrideDirectory()
     {
-        TCHAR Buffer[MAX_PATH] = { 0 };
-        const UINT Length = ::GetSystemDirectory(Buffer, UE_ARRAY_COUNT(Buffer));
-        if (Length > 0 && Length < UE_ARRAY_COUNT(Buffer))
+        FString OverridePath = NormalizePath(GetModuleOverridePath());
+        if (OverridePath.IsEmpty())
         {
-            return NormalizePath(FString(Buffer));
+            return FString();
         }
-        return FString();
+
+        if (FPaths::FileExists(OverridePath))
+        {
+            OverridePath = FPaths::GetPath(OverridePath);
+            FPaths::MakePlatformFilename(OverridePath);
+        }
+        return OverridePath;
     }
 
-    FString GetSysWow64DirectoryFromAPI()
+    FString ResolveDllOverridePath()
     {
+        FString OverridePath = NormalizePath(GetDllOverridePath());
+        if (OverridePath.IsEmpty())
+        {
+            return FString();
+        }
+
+        if (FPaths::DirectoryExists(OverridePath))
+        {
 #if PLATFORM_64BITS
-        TCHAR Buffer[MAX_PATH] = { 0 };
-        const UINT Length = ::GetSystemWow64Directory(Buffer, UE_ARRAY_COUNT(Buffer));
-        if (Length > 0 && Length < UE_ARRAY_COUNT(Buffer))
-        {
-            return NormalizePath(FString(Buffer));
-        }
-#endif
-        return FString();
-    }
-#endif // PLATFORM_WINDOWS
-
-#if OMNI_WITH_AVENCODER && PLATFORM_WINDOWS
-    void AddUniqueDirectory(TArray<FString>& Directories, const FString& Directory)
-    {
-        const FString Normalized = NormalizePath(Directory);
-        if (!Normalized.IsEmpty())
-        {
-            Directories.AddUnique(Normalized);
-        }
-    }
-
-    bool DirectoryContainsAVEncoderBinary(const FString& Directory)
-    {
-        if (Directory.IsEmpty())
-        {
-            return false;
-        }
-
-        const FString Normalized = NormalizePath(Directory);
-        if (Normalized.IsEmpty() || !FPaths::DirectoryExists(Normalized))
-        {
-            return false;
-        }
-
-        TArray<FString> CandidateFiles;
-        IFileManager::Get().FindFiles(CandidateFiles, *(FPaths::Combine(Normalized, TEXT("*.dll"))), true, false);
-        for (const FString& FileName : CandidateFiles)
-        {
-            if (FileName.Contains(TEXT("AVEncoder"), ESearchCase::IgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    FString DetectAVEncoderModuleDirectory()
-    {
-        if (GetAutoDetectModuleAttempted())
-        {
-            return GetAutoDetectedModulePath();
-        }
-
-        GetAutoDetectModuleAttempted() = true;
-        FString& CachedPath = GetAutoDetectedModulePath();
-
-        TArray<FString> CandidateDirectories;
-        AddUniqueDirectory(CandidateDirectories, FPlatformProcess::ExecutableDir());
-        AddUniqueDirectory(CandidateDirectories, FPaths::Combine(FPaths::EngineDir(), TEXT("Binaries/Win64")));
-        AddUniqueDirectory(CandidateDirectories, FPaths::Combine(FPaths::EngineDir(), TEXT("Plugins/Media/AVEncoder/Binaries/Win64")));
-        AddUniqueDirectory(CandidateDirectories, FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries/Win64")));
-
-        if (IPluginManager::Get().IsInitialized())
-        {
-            if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("AVEncoder")))
-            {
-                AddUniqueDirectory(CandidateDirectories, FPaths::Combine(Plugin->GetBaseDir(), TEXT("Binaries/Win64")));
-            }
-        }
-
-        for (const FString& Candidate : CandidateDirectories)
-        {
-            if (DirectoryContainsAVEncoderBinary(Candidate))
-            {
-                CachedPath = Candidate;
-                return CachedPath;
-            }
-        }
-
-        CachedPath.Reset();
-        return CachedPath;
-    }
-
-    FString CheckDirectoryForNVENCDll(const FString& Directory)
-    {
-        if (Directory.IsEmpty())
-        {
-            return FString();
-        }
-
-        const FString Normalized = NormalizePath(Directory);
-        if (Normalized.IsEmpty())
-        {
-            return FString();
-        }
-
-        if (FPaths::GetExtension(Normalized, true).Equals(TEXT(".dll"), ESearchCase::IgnoreCase))
-        {
-            return FPaths::FileExists(Normalized) ? Normalized : FString();
-        }
-
-        FString Candidate = FPaths::Combine(Normalized, TEXT("nvEncodeAPI64.dll"));
-        FPaths::MakePlatformFilename(Candidate);
-        return FPaths::FileExists(Candidate) ? Candidate : FString();
-    }
-
-    FString DetectNVENCDllPath()
-    {
-        if (GetAutoDetectDllAttempted())
-        {
-            return GetAutoDetectedDllPath();
-        }
-
-        GetAutoDetectDllAttempted() = true;
-        FString& CachedPath = GetAutoDetectedDllPath();
-
-        TArray<FString> CandidateDirectories;
-        AddUniqueDirectory(CandidateDirectories, FPlatformProcess::ExecutableDir());
-        AddUniqueDirectory(CandidateDirectories, FPaths::Combine(FPaths::EngineDir(), TEXT("Binaries/Win64")));
-        AddUniqueDirectory(CandidateDirectories, FPaths::Combine(FPaths::ProjectDir(), TEXT("Binaries/Win64")));
-
-        const FString SystemRoot = NormalizePath(FPlatformMisc::GetEnvironmentVariable(TEXT("SystemRoot")));
-        if (!SystemRoot.IsEmpty())
-        {
-            AddUniqueDirectory(CandidateDirectories, FPaths::Combine(SystemRoot, TEXT("System32")));
-            AddUniqueDirectory(CandidateDirectories, FPaths::Combine(SystemRoot, TEXT("SysWOW64")));
-        }
-
-#if PLATFORM_WINDOWS
-        const FString System32Directory = GetSystem32DirectoryFromAPI();
-        if (!System32Directory.IsEmpty())
-        {
-            AddUniqueDirectory(CandidateDirectories, System32Directory);
-        }
-
-        const FString SysWow64Directory = GetSysWow64DirectoryFromAPI();
-        if (!SysWow64Directory.IsEmpty())
-        {
-            AddUniqueDirectory(CandidateDirectories, SysWow64Directory);
-        }
-#endif
-
-        for (const FString& Directory : CandidateDirectories)
-        {
-            const FString FoundDll = CheckDirectoryForNVENCDll(Directory);
-            if (!FoundDll.IsEmpty())
-            {
-                CachedPath = FoundDll;
-                return CachedPath;
-            }
-        }
-
-        if (!SystemRoot.IsEmpty())
-        {
-            const FString DriverStore = FPaths::Combine(SystemRoot, TEXT("System32/DriverStore/FileRepository"));
-            if (FPaths::DirectoryExists(DriverStore))
-            {
-                TArray<FString> FoundDlls;
-                IFileManager::Get().FindFilesRecursive(FoundDlls, *DriverStore, TEXT("nvencodeapi64.dll"), true, false);
-                if (FoundDlls.Num() > 0)
-                {
-                    FoundDlls.Sort([](const FString& A, const FString& B)
-                    {
-                        return A > B;
-                    });
-                    FString FirstMatch = NormalizePath(FoundDlls[0]);
-                    if (!FirstMatch.IsEmpty())
-                    {
-                        CachedPath = FirstMatch;
-                        return CachedPath;
-                    }
-                }
-            }
-        }
-
-        const TCHAR* ProgramFilesVars[] = { TEXT("ProgramFiles"), TEXT("ProgramFiles(x86)") };
-        for (const TCHAR* EnvVar : ProgramFilesVars)
-        {
-            const FString Root = NormalizePath(FPlatformMisc::GetEnvironmentVariable(EnvVar));
-            if (Root.IsEmpty())
-            {
-                continue;
-            }
-
-            const FString NvidiaRoot = FPaths::Combine(Root, TEXT("NVIDIA Corporation"));
-            if (FPaths::DirectoryExists(NvidiaRoot))
-            {
-                TArray<FString> FoundDlls;
-                IFileManager::Get().FindFilesRecursive(FoundDlls, *NvidiaRoot, TEXT("nvencodeapi64.dll"), true, false);
-                if (FoundDlls.Num() > 0)
-                {
-                    FoundDlls.Sort([](const FString& A, const FString& B)
-                    {
-                        return A > B;
-                    });
-                    FString FirstMatch = NormalizePath(FoundDlls[0]);
-                    if (!FirstMatch.IsEmpty())
-                    {
-                        CachedPath = FirstMatch;
-                        return CachedPath;
-                    }
-                }
-            }
-        }
-
-        CachedPath.Reset();
-        return CachedPath;
-    }
+            OverridePath = FPaths::Combine(OverridePath, TEXT("nvEncodeAPI64.dll"));
 #else
-    FString DetectAVEncoderModuleDirectory()
-    {
-        if (!GetAutoDetectModuleAttempted())
-        {
-            GetAutoDetectModuleAttempted() = true;
-            GetAutoDetectedModulePath().Reset();
+            OverridePath = FPaths::Combine(OverridePath, TEXT("nvEncodeAPI.dll"));
+#endif
         }
-        return GetAutoDetectedModulePath();
+        return OverridePath;
     }
 
-    FString DetectNVENCDllPath()
+    void ApplyRuntimeOverrides()
     {
-        if (!GetAutoDetectDllAttempted())
+        const FString ModuleDirectory = ResolveModuleOverrideDirectory();
+        if (!ModuleDirectory.IsEmpty())
         {
-            GetAutoDetectDllAttempted() = true;
-            GetAutoDetectedDllPath().Reset();
-        }
-        return GetAutoDetectedDllPath();
-    }
-#endif // OMNI_WITH_AVENCODER && PLATFORM_WINDOWS
-
-    bool& GetModuleDirectoryRegisteredFlag()
-    {
-        static bool bRegistered = false;
-        return bRegistered;
-    }
-
-    void EnsureModuleOverrideRegistered()
-    {
-        FString OverridePath;
-        bool bNeedsRegistration = false;
-
-        {
-            FScopeLock OverrideLock(&GetModuleOverrideMutex());
-            OverridePath = GetModuleOverridePath();
-            bool& bRegistered = GetModuleDirectoryRegisteredFlag();
-            if (!OverridePath.IsEmpty() && !bRegistered)
-            {
-                bNeedsRegistration = true;
-                bRegistered = true;
-            }
+            FNVENCCommon::SetSearchDirectory(ModuleDirectory);
         }
 
-        if (bNeedsRegistration)
+        const FString DllPath = ResolveDllOverridePath();
+        if (!DllPath.IsEmpty())
         {
-            FModuleManager::Get().AddModuleDirectory(*OverridePath);
+            FNVENCCommon::SetOverrideDllPath(DllPath);
         }
     }
 
-    bool TryCreateEncoderSession(OmniAVEncoder::ECodec Codec, OmniAVEncoder::EVideoFormat Format, FString& OutFailureReason)
+    ERHIInterfaceType GetCurrentRHIType()
     {
-        constexpr int32 TestWidth = 256;
-        constexpr int32 TestHeight = 144;
+        return GDynamicRHI ? GDynamicRHI->GetInterfaceType() : ERHIInterfaceType::Null;
+    }
 
-        OmniAVEncoder::FVideoEncoderInput::FCreateParameters CreateParameters;
-        CreateParameters.Width = TestWidth;
-        CreateParameters.Height = TestHeight;
-        CreateParameters.MaxBufferDimensions = FIntPoint(TestWidth, TestHeight);
-        CreateParameters.Format = Format;
-        CreateParameters.DebugName = TEXT("OmniNVENCProbe");
-        CreateParameters.bAutoCopy = true;
-
-        TSharedPtr<OmniAVEncoder::FVideoEncoderInput> EncoderInput = OmniAVEncoder::FVideoEncoderInput::CreateForRHI(CreateParameters);
-        if (!EncoderInput.IsValid())
+    bool SupportsEnginePixelFormat(EOmniCaptureColorFormat Format)
+    {
+        switch (Format)
         {
-            OutFailureReason = TEXT("Failed to create AVEncoder input for probe");
+        case EOmniCaptureColorFormat::NV12:
+            return GPixelFormats[PF_NV12].Supported != 0;
+        case EOmniCaptureColorFormat::P010:
+#if defined(PF_P010)
+            return GPixelFormats[PF_P010].Supported != 0;
+#else
+            return false;
+#endif
+        case EOmniCaptureColorFormat::BGRA:
+            return GPixelFormats[PF_B8G8R8A8].Supported != 0;
+        default:
+            return false;
+        }
+    }
+
+    ENVENCCodec ToCodec(EOmniCaptureCodec Codec)
+    {
+        return Codec == EOmniCaptureCodec::HEVC ? ENVENCCodec::HEVC : ENVENCCodec::H264;
+    }
+
+    ENVENCBufferFormat ToBufferFormat(EOmniCaptureColorFormat Format)
+    {
+        switch (Format)
+        {
+        case EOmniCaptureColorFormat::P010:
+            return ENVENCBufferFormat::P010;
+        case EOmniCaptureColorFormat::BGRA:
+            return ENVENCBufferFormat::BGRA;
+        case EOmniCaptureColorFormat::NV12:
+        default:
+            return ENVENCBufferFormat::NV12;
+        }
+    }
+
+    ENVENCRateControlMode ToRateControlMode(EOmniCaptureRateControlMode Mode)
+    {
+        switch (Mode)
+        {
+        case EOmniCaptureRateControlMode::VariableBitrate:
+            return ENVENCRateControlMode::VBR;
+        case EOmniCaptureRateControlMode::Lossless:
+            return ENVENCRateControlMode::CONSTQP;
+        case EOmniCaptureRateControlMode::ConstantBitrate:
+        default:
+            return ENVENCRateControlMode::CBR;
+        }
+    }
+
+    bool TryCreateProbeSession(ENVENCCodec Codec, ENVENCBufferFormat Format, FString& OutFailureReason)
+    {
+#if !PLATFORM_WINDOWS
+        OutFailureReason = TEXT("NVENC probe requires Windows.");
+        return false;
+#else
+        ID3D11Device* Device = nullptr;
+#if WITH_D3D11_RHI
+        uint32 Flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        const D3D_FEATURE_LEVEL FeatureLevels[] =
+        {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0
+        };
+        TRefCountPtr<ID3D11Device> LocalDevice;
+        TRefCountPtr<ID3D11DeviceContext> LocalContext;
+        HRESULT Hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, Flags, FeatureLevels, UE_ARRAY_COUNT(FeatureLevels), D3D11_SDK_VERSION, LocalDevice.GetInitReference(), nullptr, LocalContext.GetInitReference());
+        if (FAILED(Hr))
+        {
+            OutFailureReason = FString::Printf(TEXT("Failed to create probing D3D11 device (0x%08x)."), Hr);
+            return false;
+        }
+        Device = LocalDevice;
+#else
+        OutFailureReason = TEXT("D3D11 support is required for NVENC probing in this build.");
+        return false;
+#endif
+
+        FNVENCSession Session;
+        if (!Session.Open(Codec, Device, NV_ENC_DEVICE_TYPE_DIRECTX))
+        {
+            OutFailureReason = TEXT("Unable to open NVENC session for probe.");
             return false;
         }
 
-        OmniAVEncoder::FVideoEncoder::FLayerConfig LayerConfig;
-        LayerConfig.Width = TestWidth;
-        LayerConfig.Height = TestHeight;
-        LayerConfig.MaxFramerate = 60;
-        LayerConfig.TargetBitrate = 5 * 1000 * 1000;
-        LayerConfig.MaxBitrate = 10 * 1000 * 1000;
+        FNVENCParameters Parameters;
+        Parameters.Codec = Codec;
+        Parameters.BufferFormat = Format;
+        Parameters.Width = 256;
+        Parameters.Height = 144;
+        Parameters.Framerate = 60;
+        Parameters.TargetBitrate = 5 * 1000 * 1000;
+        Parameters.MaxBitrate = 10 * 1000 * 1000;
+        Parameters.GOPLength = 60;
+        Parameters.RateControlMode = ENVENCRateControlMode::CBR;
+        Parameters.MultipassMode = ENVENCMultipassMode::DISABLED;
 
-        OmniAVEncoder::FVideoEncoder::FCodecConfig CodecConfig;
-        CodecConfig.GOPLength = 30;
-        CodecConfig.MaxNumBFrames = 0;
-        CodecConfig.bEnableFrameReordering = false;
-
-        OmniAVEncoder::FVideoEncoder::FInit EncoderInit;
-        EncoderInit.Codec = Codec;
-        EncoderInit.CodecConfig = CodecConfig;
-        EncoderInit.Layers.Add(LayerConfig);
-
-        auto OnEncodedPacket = OmniAVEncoder::FVideoEncoder::FOnEncodedPacket::CreateLambda([](const OmniAVEncoder::FVideoEncoder::FEncodedPacket&)
+        if (!Session.Initialize(Parameters))
         {
-        });
-
-        TSharedPtr<OmniAVEncoder::FVideoEncoder> VideoEncoder = OmniAVEncoder::FVideoEncoderFactory::Create(*EncoderInput, EncoderInit, MoveTemp(OnEncodedPacket));
-        if (!VideoEncoder.IsValid())
-        {
-            OutFailureReason = TEXT("Failed to create AVEncoder NVENC instance");
+            OutFailureReason = TEXT("Failed to initialise NVENC session during probe.");
+            Session.Destroy();
             return false;
         }
 
-        VideoEncoder.Reset();
-        EncoderInput.Reset();
+        FNVENCBitstream Bitstream;
+        if (!Bitstream.Initialize(Session.GetEncoderHandle(), Session.GetFunctionList()))
+        {
+            OutFailureReason = TEXT("Failed to allocate NVENC bitstream during probe.");
+            Session.Destroy();
+            return false;
+        }
 
+        Session.Destroy();
         return true;
+#endif
     }
 
     FNVENCHardwareProbeResult RunNVENCHardwareProbe()
     {
+        ApplyRuntimeOverrides();
+
         FNVENCHardwareProbeResult Result;
 
-        FString OverridePath;
+        if (!FNVENCCommon::EnsureLoaded())
         {
-            FScopeLock OverrideLock(&GetDllOverrideMutex());
-            OverridePath = GetDllOverridePath();
-        }
-
-        OverridePath.TrimStartAndEndInline();
-        FString NormalizedOverridePath = OverridePath;
-        if (!NormalizedOverridePath.IsEmpty())
-        {
-            NormalizedOverridePath = FPaths::ConvertRelativePathToFull(NormalizedOverridePath);
-            FPaths::MakePlatformFilename(NormalizedOverridePath);
-        }
-
-        FString OverrideCandidate = NormalizedOverridePath;
-        if (!OverrideCandidate.IsEmpty())
-        {
-            const FString Extension = FPaths::GetExtension(OverrideCandidate, true);
-            if (!Extension.Equals(TEXT(".dll"), ESearchCase::IgnoreCase))
-            {
-                OverrideCandidate = FPaths::Combine(OverrideCandidate, TEXT("nvEncodeAPI64.dll"));
-            }
-            FPaths::MakePlatformFilename(OverrideCandidate);
-        }
-
-        void* NvencHandle = nullptr;
-        FString LoadedFrom;
-        TArray<FString> FailureMessages;
-
-        if (!OverrideCandidate.IsEmpty())
-        {
-            if (!FPaths::FileExists(*OverrideCandidate))
-            {
-                FailureMessages.Add(FString::Printf(TEXT("Override path not found: %s."), *OverrideCandidate));
-            }
-            else
-            {
-                NvencHandle = FPlatformProcess::GetDllHandle(*OverrideCandidate);
-                if (NvencHandle)
-                {
-                    LoadedFrom = OverrideCandidate;
-                }
-                else
-                {
-                    FailureMessages.Add(FString::Printf(TEXT("Failed to load override DLL: %s."), *OverrideCandidate));
-                }
-            }
-        }
-
-        if (!NvencHandle)
-        {
-            NvencHandle = FPlatformProcess::GetDllHandle(TEXT("nvEncodeAPI64.dll"));
-            if (NvencHandle)
-            {
-                LoadedFrom = TEXT("system search paths");
-            }
-            else
-            {
-                FailureMessages.Add(TEXT("Failed to load nvEncodeAPI64.dll from system search paths."));
-            }
-        }
-
-        if (NvencHandle)
-        {
-            Result.bDllPresent = true;
-            if (!LoadedFrom.IsEmpty())
-            {
-                UE_LOG(LogTemp, Verbose, TEXT("NVENC probe loading nvEncodeAPI64.dll from %s"), *LoadedFrom);
-            }
-            FNvEncodeAPIGetMaxSupportedVersion NvEncodeAPIGetMaxSupportedVersion = reinterpret_cast<FNvEncodeAPIGetMaxSupportedVersion>(FPlatformProcess::GetDllExport(NvencHandle, TEXT("NvEncodeAPIGetMaxSupportedVersion")));
-            if (NvEncodeAPIGetMaxSupportedVersion)
-            {
-                uint32 MaxVersion = 0;
-                const uint32 NvStatus = NvEncodeAPIGetMaxSupportedVersion(&MaxVersion);
-                if (NvStatus == 0 && MaxVersion != 0)
-                {
-                    Result.bApisReady = true;
-                }
-                else
-                {
-                    Result.ApiFailureReason = FString::Printf(TEXT("NvEncodeAPIGetMaxSupportedVersion failed (status=0x%08x, version=%u)"), NvStatus, MaxVersion);
-                }
-            }
-            else
-            {
-                Result.ApiFailureReason = TEXT("NvEncodeAPIGetMaxSupportedVersion export missing in nvEncodeAPI64.dll");
-            }
-            FPlatformProcess::FreeDllHandle(NvencHandle);
-        }
-        else
-        {
-            Result.DllFailureReason = FailureMessages.Num() > 0
-                ? FString::Join(FailureMessages, TEXT(" "))
-                : TEXT("Failed to load nvEncodeAPI64.dll.");
-        }
-
-        if (!Result.bDllPresent)
-        {
-            Result.HardwareFailureReason = Result.DllFailureReason.IsEmpty() ? TEXT("NVENC runtime DLL missing") : Result.DllFailureReason;
+            Result.DllFailureReason = TEXT("Unable to load nvEncodeAPI runtime.");
             return Result;
         }
 
-        if (!Result.bApisReady)
+        Result.bDllPresent = true;
+
+        FNVEncodeAPILoader& Loader = FNVEncodeAPILoader::Get();
+        if (!Loader.Load())
         {
-            Result.HardwareFailureReason = Result.ApiFailureReason.IsEmpty() ? TEXT("Failed to query NVENC API version") : Result.ApiFailureReason;
+            Result.ApiFailureReason = TEXT("Failed to resolve NVENC exports.");
             return Result;
         }
 
-        EnsureModuleOverrideRegistered();
-
-        if (!FModuleManager::Get().IsModuleLoaded(TEXT("AVEncoder")))
-        {
-            if (!FModuleManager::Get().LoadModule(TEXT("AVEncoder")))
-            {
-                Result.HardwareFailureReason = TEXT("Failed to load the AVEncoder module. Provide an override path if it resides outside the engine.");
-                return Result;
-            }
-        }
+        Result.bApisReady = true;
 
         FString SessionFailure;
-        if (!TryCreateEncoderSession(OmniAVEncoder::ECodec::H264, OmniAVEncoder::EVideoFormat::BGRA8, SessionFailure))
+        if (!TryCreateProbeSession(ENVENCCodec::H264, ENVENCBufferFormat::NV12, SessionFailure))
         {
             Result.SessionFailureReason = SessionFailure;
-            Result.BGRAFailureReason = SessionFailure;
-            Result.HardwareFailureReason = SessionFailure;
             return Result;
         }
 
         Result.bSessionOpenable = true;
         Result.bSupportsH264 = true;
-        Result.bSupportsBGRA = true;
+        Result.bSupportsNV12 = true;
 
         FString Nv12Failure;
-        if (TryCreateEncoderSession(OmniAVEncoder::ECodec::H264, OmniAVEncoder::EVideoFormat::NV12, Nv12Failure))
+        if (TryCreateProbeSession(ENVENCCodec::H264, ENVENCBufferFormat::BGRA, Nv12Failure))
         {
-            Result.bSupportsNV12 = true;
+            Result.bSupportsBGRA = true;
         }
         else
         {
-            Result.NV12FailureReason = Nv12Failure;
+            Result.BGRAFailureReason = Nv12Failure;
         }
 
-        bool bHevcSuccess = false;
         FString HevcFailure;
-        if (TryCreateEncoderSession(OmniAVEncoder::ECodec::HEVC, OmniAVEncoder::EVideoFormat::NV12, HevcFailure))
+        if (TryCreateProbeSession(ENVENCCodec::HEVC, ENVENCBufferFormat::NV12, HevcFailure))
         {
             Result.bSupportsHEVC = true;
-            bHevcSuccess = true;
         }
         else
         {
@@ -647,85 +344,36 @@ namespace
         }
 
         FString P010Failure;
-        if (TryCreateEncoderSession(OmniAVEncoder::ECodec::HEVC, OmniAVEncoder::EVideoFormat::P010, P010Failure))
+        if (TryCreateProbeSession(ENVENCCodec::HEVC, ENVENCBufferFormat::P010, P010Failure))
         {
             Result.bSupportsP010 = true;
-            Result.bSupportsHEVC = true;
-            bHevcSuccess = true;
         }
         else
         {
             Result.P010FailureReason = P010Failure;
         }
 
-        if (!Result.bSupportsNV12 && Result.NV12FailureReason.IsEmpty())
-        {
-            Result.NV12FailureReason = TEXT("NV12 input format is not available on this NVENC hardware.");
-        }
-
-        if (!Result.bSupportsP010 && Result.P010FailureReason.IsEmpty())
-        {
-            Result.P010FailureReason = TEXT("10-bit P010 input is not available on this NVENC hardware.");
-        }
-
-        if (!bHevcSuccess)
-        {
-            if (!Result.P010FailureReason.IsEmpty())
-            {
-                Result.CodecFailureReason = Result.P010FailureReason;
-            }
-            Result.bSupportsHEVC = false;
-        }
-        else
-        {
-            Result.CodecFailureReason.Reset();
-        }
-
-        Result.HardwareFailureReason = TEXT("");
-
-        UE_LOG(LogTemp, Log, TEXT("NVENC probe succeeded (NV12=%s, P010=%s, HEVC=%s, BGRA=%s)"),
-            Result.bSupportsNV12 ? TEXT("Yes") : TEXT("No"),
-            Result.bSupportsP010 ? TEXT("Yes") : TEXT("No"),
-            Result.bSupportsHEVC ? TEXT("Yes") : TEXT("No"),
-            Result.bSupportsBGRA ? TEXT("Yes") : TEXT("No"));
         return Result;
-    }
-
-    const FNVENCHardwareProbeResult& GetNVENCHardwareProbe()
-    {
-        FScopeLock CacheLock(&GetProbeCacheMutex());
-        if (!GetProbeValidFlag())
-        {
-            GetCachedProbe() = RunNVENCHardwareProbe();
-            GetProbeValidFlag() = true;
-            const FNVENCHardwareProbeResult& CachedResult = GetCachedProbe();
-            if (!CachedResult.bDllPresent || !CachedResult.bApisReady || !CachedResult.bSessionOpenable)
-            {
-                UE_LOG(LogTemp, Warning, TEXT("NVENC probe failed (Dll=%s, Api=%s, Session=%s). Reasons: %s | %s | %s"),
-                    CachedResult.bDllPresent ? TEXT("Yes") : TEXT("No"),
-                    CachedResult.bApisReady ? TEXT("Yes") : TEXT("No"),
-                    CachedResult.bSessionOpenable ? TEXT("Yes") : TEXT("No"),
-                    CachedResult.DllFailureReason.IsEmpty() ? TEXT("<none>") : *CachedResult.DllFailureReason,
-                    CachedResult.ApiFailureReason.IsEmpty() ? TEXT("<none>") : *CachedResult.ApiFailureReason,
-                    CachedResult.SessionFailureReason.IsEmpty() ? TEXT("<none>") : *CachedResult.SessionFailureReason);
-            }
-        }
-        return GetCachedProbe();
     }
 #endif
 }
-#if PLATFORM_WINDOWS
-#undef OMNI_NVENCAPI
-#endif
 
-FOmniCaptureNVENCEncoder::FOmniCaptureNVENCEncoder()
+FOmniCaptureNVENCEncoder::FOmniCaptureNVENCEncoder() = default;
+FOmniCaptureNVENCEncoder::~FOmniCaptureNVENCEncoder()
 {
+    Finalize();
 }
 
 bool FOmniCaptureNVENCEncoder::IsNVENCAvailable()
 {
-#if OMNI_WITH_AVENCODER && PLATFORM_WINDOWS
-    const FNVENCHardwareProbeResult& Probe = GetNVENCHardwareProbe();
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    FScopeLock Lock(&GetProbeCacheMutex());
+    if (!GetProbeValidFlag())
+    {
+        GetCachedProbe() = RunNVENCHardwareProbe();
+        GetProbeValidFlag() = true;
+    }
+    const FNVENCHardwareProbeResult& Probe = GetCachedProbe();
     return Probe.bDllPresent && Probe.bApisReady && Probe.bSessionOpenable;
 #else
     return false;
@@ -735,25 +383,24 @@ bool FOmniCaptureNVENCEncoder::IsNVENCAvailable()
 FOmniNVENCCapabilities FOmniCaptureNVENCEncoder::QueryCapabilities()
 {
     FOmniNVENCCapabilities Caps;
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    FScopeLock Lock(&GetProbeCacheMutex());
+    if (!GetProbeValidFlag())
+    {
+        GetCachedProbe() = RunNVENCHardwareProbe();
+        GetProbeValidFlag() = true;
+    }
 
-#if OMNI_WITH_AVENCODER && PLATFORM_WINDOWS
-    const FNVENCHardwareProbeResult& Probe = GetNVENCHardwareProbe();
-
+    const FNVENCHardwareProbeResult& Probe = GetCachedProbe();
     Caps.bDllPresent = Probe.bDllPresent;
     Caps.bApisReady = Probe.bApisReady;
     Caps.bSessionOpenable = Probe.bSessionOpenable;
-
-    const bool bEngineSupportsNV12 = SupportsColorFormat(EOmniCaptureColorFormat::NV12);
-    const bool bEngineSupportsP010 = SupportsColorFormat(EOmniCaptureColorFormat::P010);
-    const bool bEngineSupportsBGRA = SupportsColorFormat(EOmniCaptureColorFormat::BGRA);
-
     Caps.bSupportsHEVC = Probe.bSupportsHEVC;
-    Caps.bSupportsNV12 = Probe.bSupportsNV12 && bEngineSupportsNV12;
-    Caps.bSupportsP010 = Probe.bSupportsP010 && bEngineSupportsP010;
-    Caps.bSupportsBGRA = Probe.bSupportsBGRA && bEngineSupportsBGRA;
+    Caps.bSupportsNV12 = Probe.bSupportsNV12 && SupportsEnginePixelFormat(EOmniCaptureColorFormat::NV12);
+    Caps.bSupportsP010 = Probe.bSupportsP010 && SupportsEnginePixelFormat(EOmniCaptureColorFormat::P010);
+    Caps.bSupportsBGRA = Probe.bSupportsBGRA && SupportsEnginePixelFormat(EOmniCaptureColorFormat::BGRA);
     Caps.bSupports10Bit = Caps.bSupportsP010;
     Caps.bHardwareAvailable = Caps.bDllPresent && Caps.bApisReady && Caps.bSessionOpenable;
-
     Caps.DllFailureReason = Probe.DllFailureReason;
     Caps.ApiFailureReason = Probe.ApiFailureReason;
     Caps.SessionFailureReason = Probe.SessionFailureReason;
@@ -762,45 +409,15 @@ FOmniNVENCCapabilities FOmniCaptureNVENCEncoder::QueryCapabilities()
     Caps.P010FailureReason = Probe.P010FailureReason;
     Caps.BGRAFailureReason = Probe.BGRAFailureReason;
     Caps.HardwareFailureReason = Probe.HardwareFailureReason;
-
-    if (!Caps.bSupportsNV12)
-    {
-        if (Probe.bSupportsNV12 && !bEngineSupportsNV12)
-        {
-            Caps.NV12FailureReason = TEXT("NV12 pixel format unsupported by this engine build or active RHI.");
-        }
-        else if (Caps.NV12FailureReason.IsEmpty())
-        {
-            Caps.NV12FailureReason = TEXT("NV12 input format is not available on this NVENC hardware.");
-        }
-    }
-
-    if (!Caps.bSupportsP010)
-    {
-        if (Probe.bSupportsP010 && !bEngineSupportsP010)
-        {
-            Caps.P010FailureReason = TEXT("P010 pixel format unsupported by this engine build or active RHI.");
-        }
-        else if (Caps.P010FailureReason.IsEmpty())
-        {
-            Caps.P010FailureReason = TEXT("10-bit P010 input is not available on this NVENC hardware.");
-        }
-    }
-
-    if (!Caps.bSupportsBGRA && Caps.BGRAFailureReason.IsEmpty() && Probe.bSupportsBGRA)
-    {
-        Caps.BGRAFailureReason = TEXT("BGRA input is not available with the detected NVENC runtime.");
-    }
 #else
     Caps.bHardwareAvailable = false;
-    Caps.DllFailureReason = TEXT("NVENC support is only available on Windows builds with AVEncoder.");
+    Caps.DllFailureReason = TEXT("NVENC is only available on Windows builds.");
     Caps.HardwareFailureReason = Caps.DllFailureReason;
 #endif
 
     Caps.AdapterName = FPlatformMisc::GetPrimaryGPUBrand();
 #if PLATFORM_WINDOWS
     FString DeviceDescription;
-    FString PrimaryBrand = FPlatformMisc::GetPrimaryGPUBrand();
 #if OMNI_HAS_RHI_ADAPTER
     if (GDynamicRHI)
     {
@@ -808,12 +425,10 @@ FOmniNVENCCapabilities FOmniCaptureNVENCEncoder::QueryCapabilities()
         GDynamicRHI->RHIGetAdapterInfo(AdapterInfo);
         DeviceDescription = AdapterInfo.Description;
     }
-#else
-    DeviceDescription = PrimaryBrand;
 #endif
     if (DeviceDescription.IsEmpty())
     {
-        DeviceDescription = PrimaryBrand;
+        DeviceDescription = Caps.AdapterName;
     }
     const FGPUDriverInfo DriverInfo = FPlatformMisc::GetGPUDriverInfo(DeviceDescription);
 #if UE_VERSION_NEWER_THAN(5, 5, 0)
@@ -825,37 +440,26 @@ FOmniNVENCCapabilities FOmniCaptureNVENCEncoder::QueryCapabilities()
 
     return Caps;
 }
-#undef OMNI_HAS_RHI_ADAPTER
 
 bool FOmniCaptureNVENCEncoder::SupportsColorFormat(EOmniCaptureColorFormat Format)
 {
-#if OMNI_WITH_AVENCODER
-    switch (Format)
-    {
-    case EOmniCaptureColorFormat::NV12:
-        return GPixelFormats[PF_NV12].Supported != 0;
-    case EOmniCaptureColorFormat::P010:
-#if defined(PF_P010)
-        return GPixelFormats[PF_P010].Supported != 0;
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    return SupportsEnginePixelFormat(Format);
 #else
-        return false;
-#endif
-    case EOmniCaptureColorFormat::BGRA:
-        return GPixelFormats[PF_B8G8R8A8].Supported != 0;
-    default:
-        return false;
-    }
-#else
-    return Format == EOmniCaptureColorFormat::BGRA;
+    return false;
 #endif
 }
 
 bool FOmniCaptureNVENCEncoder::SupportsZeroCopyRHI()
 {
 #if PLATFORM_WINDOWS
-    return GDynamicRHI &&
-        (GDynamicRHI->GetInterfaceType() == ERHIInterfaceType::D3D11 ||
-         GDynamicRHI->GetInterfaceType() == ERHIInterfaceType::D3D12);
+    if (!GDynamicRHI)
+    {
+        return false;
+    }
+
+    const ERHIInterfaceType InterfaceType = GDynamicRHI->GetInterfaceType();
+    return InterfaceType == ERHIInterfaceType::D3D11 || InterfaceType == ERHIInterfaceType::D3D12;
 #else
     return false;
 #endif
@@ -863,275 +467,358 @@ bool FOmniCaptureNVENCEncoder::SupportsZeroCopyRHI()
 
 void FOmniCaptureNVENCEncoder::SetModuleOverridePath(const FString& InOverridePath)
 {
-#if OMNI_WITH_AVENCODER
-    FString NormalizedPath = InOverridePath;
-    NormalizedPath.TrimStartAndEndInline();
-    if (!NormalizedPath.IsEmpty())
-    {
-        NormalizedPath = FPaths::ConvertRelativePathToFull(NormalizedPath);
-        FPaths::MakePlatformFilename(NormalizedPath);
-
-        if (FPaths::FileExists(NormalizedPath))
-        {
-            NormalizedPath = FPaths::GetPath(NormalizedPath);
-            FPaths::MakePlatformFilename(NormalizedPath);
-        }
-        else if (FPaths::DirectoryExists(NormalizedPath))
-        {
-#if PLATFORM_WINDOWS
-            if (!DirectoryContainsAVEncoderBinary(NormalizedPath))
-            {
-                const FString PlatformSubdir = FPlatformProcess::GetBinariesSubdirectory();
-                const FString BinariesPath = FPaths::Combine(NormalizedPath, TEXT("Binaries"), PlatformSubdir);
-                if (DirectoryContainsAVEncoderBinary(BinariesPath))
-                {
-                    NormalizedPath = BinariesPath;
-                }
-                else
-                {
-                    const FString PlatformPath = FPaths::Combine(NormalizedPath, PlatformSubdir);
-                    if (DirectoryContainsAVEncoderBinary(PlatformPath))
-                    {
-                        NormalizedPath = PlatformPath;
-                    }
-                }
-            }
-            FPaths::MakePlatformFilename(NormalizedPath);
-#endif
-        }
-    }
-    else
-    {
-        NormalizedPath = DetectAVEncoderModuleDirectory();
-    }
-
-    const bool bHasPath = !NormalizedPath.IsEmpty();
-    bool bChanged = false;
-    {
-        FScopeLock OverrideLock(&GetModuleOverrideMutex());
-        FString& StoredPath = GetModuleOverridePath();
-        if (!StoredPath.Equals(NormalizedPath, ESearchCase::CaseSensitive))
-        {
-            StoredPath = NormalizedPath;
-            GetModuleDirectoryRegisteredFlag() = false;
-            bChanged = true;
-        }
-    }
-
-    if (bChanged)
-    {
-        if (bHasPath)
-        {
-            EnsureModuleOverrideRegistered();
-        }
-        else
-        {
-            FScopeLock OverrideLock(&GetModuleOverrideMutex());
-            GetModuleDirectoryRegisteredFlag() = false;
-        }
-
-        FScopeLock CacheLock(&GetProbeCacheMutex());
-        GetProbeValidFlag() = false;
-    }
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    GetModuleOverridePath() = InOverridePath;
+    InvalidateCachedCapabilities();
 #else
-    if (!InOverridePath.IsEmpty())
-    {
-        UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("Ignoring AVEncoder module override '%s' because NVENC support was compiled out."), *InOverridePath);
-    }
-    else
-    {
-        UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("AVEncoder module override reset ignored because NVENC support was compiled out."));
-    }
+    (void)InOverridePath;
 #endif
 }
 
 void FOmniCaptureNVENCEncoder::SetDllOverridePath(const FString& InOverridePath)
 {
-#if OMNI_WITH_AVENCODER
-    FString NormalizedPath = InOverridePath;
-    NormalizedPath.TrimStartAndEndInline();
-    if (!NormalizedPath.IsEmpty())
-    {
-        NormalizedPath = FPaths::ConvertRelativePathToFull(NormalizedPath);
-        FPaths::MakePlatformFilename(NormalizedPath);
-    }
-    else
-    {
-        NormalizedPath = DetectNVENCDllPath();
-    }
-
-    bool bChanged = false;
-    {
-        FScopeLock OverrideLock(&GetDllOverrideMutex());
-        if (!GetDllOverridePath().Equals(NormalizedPath, ESearchCase::CaseSensitive))
-        {
-            GetDllOverridePath() = NormalizedPath;
-            bChanged = true;
-        }
-    }
-
-    if (bChanged)
-    {
-        FScopeLock CacheLock(&GetProbeCacheMutex());
-        GetProbeValidFlag() = false;
-    }
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    GetDllOverridePath() = InOverridePath;
+    InvalidateCachedCapabilities();
 #else
-    if (!InOverridePath.IsEmpty())
-    {
-        UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("Ignoring NVENC DLL override '%s' because NVENC support was compiled out."), *InOverridePath);
-    }
-    else
-    {
-        UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("NVENC DLL override reset ignored because NVENC support was compiled out."));
-    }
+    (void)InOverridePath;
 #endif
 }
 
 void FOmniCaptureNVENCEncoder::InvalidateCachedCapabilities()
 {
-#if OMNI_WITH_AVENCODER
-    FScopeLock CacheLock(&GetProbeCacheMutex());
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    FScopeLock Lock(&GetProbeCacheMutex());
     GetProbeValidFlag() = false;
-
-    {
-        FScopeLock OverrideLock(&GetModuleOverrideMutex());
-        GetAutoDetectModuleAttempted() = false;
-        GetAutoDetectedModulePath().Reset();
-    }
-
-    {
-        FScopeLock OverrideLock(&GetDllOverrideMutex());
-        GetAutoDetectDllAttempted() = false;
-        GetAutoDetectedDllPath().Reset();
-    }
 #endif
-
-#if !OMNI_WITH_AVENCODER
-    UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("Ignoring NVENC capability invalidation request because NVENC support was compiled out."));
-#endif
-}
-
-FOmniCaptureNVENCEncoder::~FOmniCaptureNVENCEncoder()
-{
-    Finalize();
 }
 
 void FOmniCaptureNVENCEncoder::Initialize(const FOmniCaptureSettings& Settings, const FString& OutputDirectory)
 {
-    LastErrorMessage.Reset();
-    FString Directory = OutputDirectory.IsEmpty() ? (FPaths::ProjectSavedDir() / TEXT("OmniCaptures")) : OutputDirectory;
-    Directory = FPaths::ConvertRelativePathToFull(Directory);
-    IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-    PlatformFile.CreateDirectoryTree(*Directory);
+    Finalize();
 
-    RequestedCodec = Settings.Codec;
-    const bool bUseHEVC = RequestedCodec == EOmniCaptureCodec::HEVC;
-    OutputFilePath = Directory / (Settings.OutputFileName + (bUseHEVC ? TEXT(".h265") : TEXT(".h264")));
+    LastErrorMessage.Reset();
+    bInitialized = false;
+
+    const FString FileName = FString::Printf(TEXT("%s.%s"), *Settings.OutputFileName, Settings.Codec == EOmniCaptureCodec::HEVC ? TEXT("h265") : TEXT("h264"));
+    OutputFilePath = FPaths::Combine(OutputDirectory, FileName);
+
     ColorFormat = Settings.NVENCColorFormat;
+    RequestedCodec = Settings.Codec;
     bZeroCopyRequested = Settings.bZeroCopy;
 
-#if OMNI_WITH_AVENCODER
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    AnnexB.Reset();
+    bCodecConfigWritten = false;
+
+    ApplyRuntimeOverrides();
+
+    if (!IsNVENCAvailable())
+    {
+        LastErrorMessage = TEXT("NVENC runtime is unavailable. Falling back to image sequence.");
+        UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("%s"), *LastErrorMessage);
+        return;
+    }
+
+    if (!SupportsEnginePixelFormat(ColorFormat))
+    {
+        LastErrorMessage = TEXT("Requested NVENC pixel format is not supported by the engine or GPU.");
+        UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *LastErrorMessage);
+        return;
+    }
+
+    if (bZeroCopyRequested && !SupportsZeroCopyRHI())
+    {
+        UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("Zero-copy NVENC capture requested but RHI does not support it. Falling back to auto copy."));
+        bZeroCopyRequested = false;
+    }
+
     const FIntPoint OutputSize = Settings.GetOutputResolution();
-    const int32 OutputWidth = OutputSize.X;
-    const int32 OutputHeight = OutputSize.Y;
-
-    EnsureModuleOverrideRegistered();
-
-    if (!FModuleManager::Get().IsModuleLoaded(TEXT("AVEncoder")))
+    ActiveParameters = FNVENCParameters();
+    ActiveParameters.Codec = ToCodec(RequestedCodec);
+    ActiveParameters.BufferFormat = ToBufferFormat(ColorFormat);
+    ActiveParameters.Width = OutputSize.X;
+    ActiveParameters.Height = OutputSize.Y;
+    ActiveParameters.Framerate = FMath::Clamp<int32>(FMath::RoundToInt(Settings.TargetFrameRate), 1, 120);
+    ActiveParameters.TargetBitrate = Settings.Quality.TargetBitrateKbps * 1000;
+    ActiveParameters.MaxBitrate = FMath::Max(Settings.Quality.MaxBitrateKbps * 1000, ActiveParameters.TargetBitrate);
+    ActiveParameters.RateControlMode = ToRateControlMode(Settings.Quality.RateControlMode);
+    ActiveParameters.MultipassMode = Settings.Quality.bLowLatency ? ENVENCMultipassMode::DISABLED : ENVENCMultipassMode::FULL;
+    ActiveParameters.GOPLength = Settings.Quality.GOPLength;
+    ActiveParameters.bEnableAdaptiveQuantization = Settings.Quality.RateControlMode != EOmniCaptureRateControlMode::Lossless;
+    ActiveParameters.bEnableLookahead = !Settings.Quality.bLowLatency;
+    if (Settings.Quality.RateControlMode == EOmniCaptureRateControlMode::Lossless)
     {
-        if (!FModuleManager::Get().LoadModule(TEXT("AVEncoder")))
-        {
-            LastErrorMessage = TEXT("Failed to load the AVEncoder module. Configure the module override path if it lives outside the engine.");
-            UE_LOG(LogTemp, Error, TEXT("%s"), *LastErrorMessage);
-            return;
-        }
+        ActiveParameters.QPMin = 0;
+        ActiveParameters.QPMax = 0;
+    }
+    else
+    {
+        ActiveParameters.QPMin = 0;
+        ActiveParameters.QPMax = 51;
     }
 
-    OmniAVEncoder::FVideoEncoderInput::FCreateParameters CreateParameters;
-    CreateParameters.Width = OutputWidth;
-    CreateParameters.Height = OutputHeight;
-    CreateParameters.Format = ToVideoFormat(ColorFormat);
-    CreateParameters.MaxBufferDimensions = FIntPoint(OutputWidth, OutputHeight);
-    CreateParameters.DebugName = TEXT("OmniCaptureNVENC");
-    CreateParameters.bAutoCopy = !bZeroCopyRequested;
-
-    EncoderInput = OmniAVEncoder::FVideoEncoderInput::CreateForRHI(CreateParameters);
-    if (!EncoderInput.IsValid())
-    {
-        const FString FormatName = StaticEnum<EOmniCaptureColorFormat>()->GetNameStringByValue(static_cast<int64>(ColorFormat));
-        LastErrorMessage = FString::Printf(TEXT("Failed to create NVENC encoder input for %dx%d %s frames."),
-            OutputWidth,
-            OutputHeight,
-            *FormatName);
-        UE_LOG(LogTemp, Error, TEXT("%s"), *LastErrorMessage);
-        return;
-    }
-
-    LayerConfig = OmniAVEncoder::FVideoEncoder::FLayerConfig();
-    LayerConfig.Width = OutputWidth;
-    LayerConfig.Height = OutputHeight;
-    LayerConfig.MaxFramerate = 120;
-    LayerConfig.TargetBitrate = Settings.Quality.TargetBitrateKbps * 1000;
-    LayerConfig.MaxBitrate = FMath::Max<int32>(LayerConfig.TargetBitrate, Settings.Quality.MaxBitrateKbps * 1000);
-    LayerConfig.MinQp = 0;
-    LayerConfig.MaxQp = 51;
-
-    CodecConfig = OmniAVEncoder::FVideoEncoder::FCodecConfig();
-    CodecConfig.bLowLatency = Settings.Quality.bLowLatency;
-    CodecConfig.GOPLength = Settings.Quality.GOPLength;
-    CodecConfig.MaxNumBFrames = Settings.Quality.BFrames;
-    CodecConfig.bEnableFrameReordering = Settings.Quality.BFrames > 0;
-
-    OmniAVEncoder::FVideoEncoder::FInit EncoderInit;
-    EncoderInit.Codec = bUseHEVC ? OmniAVEncoder::ECodec::HEVC : OmniAVEncoder::ECodec::H264;
-    EncoderInit.CodecConfig = CodecConfig;
-    EncoderInit.Layers.Add(LayerConfig);
-
-    auto OnEncodedPacket = OmniAVEncoder::FVideoEncoder::FOnEncodedPacket::CreateLambda([this](const OmniAVEncoder::FVideoEncoder::FEncodedPacket& Packet)
-    {
-        FScopeLock Lock(&EncoderCS);
-        if (!BitstreamFile)
-        {
-            return;
-        }
-
-        AnnexBBuffer.Reset();
-        Packet.ToAnnexB(AnnexBBuffer);
-        if (AnnexBBuffer.Num() > 0)
-        {
-            BitstreamFile->Write(AnnexBBuffer.GetData(), AnnexBBuffer.Num());
-        }
-    });
-
-    VideoEncoder = OmniAVEncoder::FVideoEncoderFactory::Create(*EncoderInput, EncoderInit, MoveTemp(OnEncodedPacket));
-    if (!VideoEncoder.IsValid())
-    {
-        const FString CodecName = StaticEnum<EOmniCaptureCodec>()->GetNameStringByValue(static_cast<int64>(RequestedCodec));
-        LastErrorMessage = FString::Printf(TEXT("Failed to create NVENC video encoder for codec %s."), *CodecName);
-        UE_LOG(LogTemp, Error, TEXT("%s"), *LastErrorMessage);
-        EncoderInput.Reset();
-        return;
-    }
-
+    IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
     BitstreamFile.Reset(PlatformFile.OpenWrite(*OutputFilePath, /*bAppend=*/false));
     if (!BitstreamFile)
     {
-        LastErrorMessage = FString::Printf(TEXT("Unable to open NVENC bitstream output file at %s."), *OutputFilePath);
-        UE_LOG(LogTemp, Warning, TEXT("%s"), *LastErrorMessage);
+        LastErrorMessage = FString::Printf(TEXT("Unable to open NVENC output file at %s."), *OutputFilePath);
+        UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *LastErrorMessage);
+        return;
     }
 
     bInitialized = true;
-    UE_LOG(LogTemp, Log, TEXT("NVENC encoder ready (%dx%d, %s, ZeroCopy=%s)."), OutputWidth, OutputHeight, bUseHEVC ? TEXT("HEVC") : TEXT("H.264"), bZeroCopyRequested ? TEXT("Yes") : TEXT("No"));
+    UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC encoder primed – waiting for first frame to initialise session (%dx%d, %s)."),
+        ActiveParameters.Width,
+        ActiveParameters.Height,
+        RequestedCodec == EOmniCaptureCodec::HEVC ? TEXT("HEVC") : TEXT("H.264"));
 #else
-    LastErrorMessage = TEXT("NVENC is only available on Windows builds with AVEncoder support.");
-    UE_LOG(LogTemp, Warning, TEXT("%s"), *LastErrorMessage);
+    (void)Settings;
+    (void)OutputDirectory;
+    LastErrorMessage = TEXT("NVENC is only available on Windows builds.");
+    UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("%s"), *LastErrorMessage);
 #endif
 }
 
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+namespace
+{
+    ID3D11Texture2D* GetD3D11TextureFromRHI(const FTextureRHIRef& Texture)
+    {
+        return Texture.IsValid() ? static_cast<ID3D11Texture2D*>(Texture->GetNativeResource()) : nullptr;
+    }
+
+#if WITH_D3D12_RHI
+    ID3D12Resource* GetD3D12TextureFromRHI(const FTextureRHIRef& Texture)
+    {
+        return Texture.IsValid() ? static_cast<ID3D12Resource*>(Texture->GetNativeResource()) : nullptr;
+    }
+#endif
+
+    bool EncodeFrameInternal(FOmniCaptureNVENCEncoder& Encoder, const FOmniCaptureFrame& Frame)
+    {
+        TRefCountPtr<ID3D11Device> SubmissionDevice;
+        ID3D11Texture2D* SubmissionTexture = nullptr;
+#if WITH_D3D12_RHI
+        ID3D12Resource* SourceTextureD3D12 = nullptr;
+#endif
+
+        const ERHIInterfaceType RHIType = GetCurrentRHIType();
+
+        if (RHIType == ERHIInterfaceType::D3D11)
+        {
+            SubmissionTexture = GetD3D11TextureFromRHI(Frame.Texture);
+            if (!SubmissionTexture)
+            {
+                Encoder.LastErrorMessage = TEXT("NVENC submission failed – no D3D11 texture available.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            SubmissionTexture->GetDevice(SubmissionDevice.GetInitReference());
+            if (!SubmissionDevice.IsValid())
+            {
+                Encoder.LastErrorMessage = TEXT("Unable to retrieve D3D11 device from capture texture.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+        }
+#if WITH_D3D12_RHI
+        else if (RHIType == ERHIInterfaceType::D3D12)
+        {
+            SourceTextureD3D12 = GetD3D12TextureFromRHI(Frame.Texture);
+            if (!SourceTextureD3D12)
+            {
+                Encoder.LastErrorMessage = TEXT("NVENC submission failed – no D3D12 resource available.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.D3D12Input.IsValid())
+            {
+                TRefCountPtr<ID3D12Device> D3D12Device;
+                HRESULT Hr = SourceTextureD3D12->GetDevice(IID_PPV_ARGS(D3D12Device.GetInitReference()));
+                if (FAILED(Hr) || !D3D12Device.IsValid() || !Encoder.D3D12Input.Initialise(D3D12Device.GetReference()))
+                {
+                    Encoder.LastErrorMessage = TEXT("Failed to initialise D3D12 bridge for NVENC.");
+                    UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s (HRESULT=0x%08x)"), *Encoder.LastErrorMessage, Hr);
+                    return false;
+                }
+            }
+
+            ID3D11Device* BridgeDevice = Encoder.D3D12Input.GetD3D11Device();
+            if (!BridgeDevice)
+            {
+                Encoder.LastErrorMessage = TEXT("D3D12 bridge did not expose a D3D11 device for NVENC.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            SubmissionDevice = BridgeDevice;
+
+            if (!Encoder.D3D12Input.AcquireWrappedResource(SourceTextureD3D12, SubmissionTexture) || !SubmissionTexture)
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to wrap D3D12 texture for NVENC submission.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+        }
+#endif
+        else
+        {
+            Encoder.LastErrorMessage = TEXT("Active RHI does not support NVENC zero-copy submission.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            return false;
+        }
+
+        ON_SCOPE_EXIT
+        {
+#if WITH_D3D12_RHI
+            if (SourceTextureD3D12)
+            {
+                Encoder.D3D12Input.ReleaseWrappedResource(SourceTextureD3D12);
+            }
+#endif
+        };
+
+        if (!Encoder.EncoderSession.IsOpen())
+        {
+            if (!SubmissionDevice.IsValid())
+            {
+                Encoder.LastErrorMessage = TEXT("NVENC device pointer was invalid during session creation.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.EncoderSession.Open(Encoder.ActiveParameters.Codec, SubmissionDevice.GetReference(), NV_ENC_DEVICE_TYPE_DIRECTX))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to open NVENC session.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.EncoderSession.Initialize(Encoder.ActiveParameters))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to initialise NVENC session.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.Bitstream.Initialize(Encoder.EncoderSession.GetEncoderHandle(), Encoder.EncoderSession.GetFunctionList()))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to create NVENC bitstream buffer.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            TArray<uint8> SequencePayload;
+            if (Encoder.EncoderSession.GetSequenceParams(SequencePayload) && SequencePayload.Num() > 0)
+            {
+                Encoder.AnnexB.SetCodecConfig(SequencePayload);
+                Encoder.bCodecConfigWritten = false;
+            }
+
+            UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC session initialised (%dx%d)."), Encoder.ActiveParameters.Width, Encoder.ActiveParameters.Height);
+        }
+
+        if (!Encoder.D3D11Input.IsValid())
+        {
+            if (!SubmissionDevice.IsValid())
+            {
+                Encoder.LastErrorMessage = TEXT("D3D11 device unavailable for NVENC input initialisation.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+
+            if (!Encoder.D3D11Input.Initialise(SubmissionDevice.GetReference(), Encoder.EncoderSession))
+            {
+                Encoder.LastErrorMessage = TEXT("Failed to initialise NVENC D3D11 input bridge.");
+                UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+                return false;
+            }
+        }
+
+        if (!Encoder.D3D11Input.RegisterResource(SubmissionTexture))
+        {
+            Encoder.LastErrorMessage = TEXT("Failed to register input texture with NVENC.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            return false;
+        }
+
+        NV_ENC_INPUT_PTR MappedInput = nullptr;
+        if (!Encoder.D3D11Input.MapResource(SubmissionTexture, MappedInput) || !MappedInput)
+        {
+            Encoder.LastErrorMessage = TEXT("Failed to map input texture for NVENC encoding.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            return false;
+        }
+
+        NV_ENC_PIC_PARAMS PicParams = {};
+        PicParams.version = NV_ENC_PIC_PARAMS_VER;
+        PicParams.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
+        PicParams.inputBuffer = MappedInput;
+        PicParams.bufferFmt = Encoder.EncoderSession.GetNVBufferFormat();
+        PicParams.inputWidth = Encoder.ActiveParameters.Width;
+        PicParams.inputHeight = Encoder.ActiveParameters.Height;
+        PicParams.outputBitstream = Encoder.Bitstream.GetBitstreamBuffer();
+        PicParams.inputTimeStamp = static_cast<uint64>(Frame.Metadata.Timecode * 1'000'000.0);
+        PicParams.frameIdx = Frame.Metadata.FrameIndex;
+        if (Frame.Metadata.bKeyFrame)
+        {
+            PicParams.encodePicFlags |= NV_ENC_PIC_FLAG_FORCEINTRA;
+        }
+
+        auto EncodePicture = Encoder.EncoderSession.GetFunctionList().nvEncEncodePicture;
+        if (!EncodePicture)
+        {
+            Encoder.LastErrorMessage = TEXT("NVENC function table missing nvEncEncodePicture.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            Encoder.D3D11Input.UnmapResource(MappedInput);
+            return false;
+        }
+
+        NVENCSTATUS Status = EncodePicture(Encoder.EncoderSession.GetEncoderHandle(), &PicParams);
+        if (Status != NV_ENC_SUCCESS)
+        {
+            Encoder.LastErrorMessage = FString::Printf(TEXT("nvEncEncodePicture failed: %s"), *FNVENCDefs::StatusToString(Status));
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            Encoder.D3D11Input.UnmapResource(MappedInput);
+            return false;
+        }
+
+        void* BitstreamData = nullptr;
+        int32 BitstreamSize = 0;
+        if (!Encoder.Bitstream.Lock(BitstreamData, BitstreamSize))
+        {
+            Encoder.LastErrorMessage = TEXT("Failed to lock NVENC bitstream.");
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *Encoder.LastErrorMessage);
+            Encoder.D3D11Input.UnmapResource(MappedInput);
+            return false;
+        }
+
+        OmniNVENC::FNVENCEncodedPacket Packet;
+        if (Encoder.Bitstream.ExtractPacket(Packet) && Packet.Data.Num() > 0 && Encoder.BitstreamFile)
+        {
+            if (!Encoder.bCodecConfigWritten && Encoder.AnnexB.GetCodecConfig().Num() > 0)
+            {
+                Encoder.BitstreamFile->Write(Encoder.AnnexB.GetCodecConfig().GetData(), Encoder.AnnexB.GetCodecConfig().Num());
+                Encoder.bCodecConfigWritten = true;
+            }
+
+            Encoder.BitstreamFile->Write(Packet.Data.GetData(), Packet.Data.Num());
+        }
+
+        Encoder.Bitstream.Unlock();
+        Encoder.D3D11Input.UnmapResource(MappedInput);
+        return true;
+    }
+}
+#endif
+
 void FOmniCaptureNVENCEncoder::EnqueueFrame(const FOmniCaptureFrame& Frame)
 {
-#if OMNI_WITH_AVENCODER
-    if (!bInitialized || !VideoEncoder.IsValid() || !EncoderInput.IsValid())
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    if (!bInitialized || !BitstreamFile)
     {
         return;
     }
@@ -1143,7 +830,7 @@ void FOmniCaptureNVENCEncoder::EnqueueFrame(const FOmniCaptureFrame& Frame)
 
     if (Frame.bUsedCPUFallback)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Skipping NVENC submission because frame used CPU equirect fallback."));
+        UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("Skipping NVENC submission because frame used CPU fallback."));
         return;
     }
 
@@ -1152,37 +839,8 @@ void FOmniCaptureNVENCEncoder::EnqueueFrame(const FOmniCaptureFrame& Frame)
         return;
     }
 
-    TSharedPtr<OmniAVEncoder::FVideoEncoderInputFrame> InputFrame;
-    if (Frame.EncoderTextures.Num() > 0)
-    {
-        InputFrame = EncoderInput->CreateEncoderInputFrame();
-        if (InputFrame.IsValid())
-        {
-            for (int32 PlaneIndex = 0; PlaneIndex < Frame.EncoderTextures.Num(); ++PlaneIndex)
-            {
-                if (Frame.EncoderTextures[PlaneIndex].IsValid())
-                {
-                    InputFrame->SetTexture(PlaneIndex, Frame.EncoderTextures[PlaneIndex]);
-                }
-            }
-        }
-    }
-
-    if (!InputFrame.IsValid())
-    {
-        InputFrame = EncoderInput->CreateEncoderInputFrameFromRHITexture(Frame.Texture);
-    }
-
-    if (!InputFrame.IsValid())
-    {
-        return;
-    }
-
-    InputFrame->SetTimestampUs(static_cast<uint64>(Frame.Metadata.Timecode * 1'000'000.0));
-    InputFrame->SetFrameIndex(Frame.Metadata.FrameIndex);
-    InputFrame->SetKeyFrame(Frame.Metadata.bKeyFrame);
-
-    VideoEncoder->Encode(InputFrame);
+    FScopeLock Lock(&EncoderCS);
+    EncodeFrameInternal(*this, Frame);
 #else
     (void)Frame;
 #endif
@@ -1190,15 +848,8 @@ void FOmniCaptureNVENCEncoder::EnqueueFrame(const FOmniCaptureFrame& Frame)
 
 void FOmniCaptureNVENCEncoder::Finalize()
 {
-#if OMNI_WITH_AVENCODER
-    if (!bInitialized)
-    {
-        LastErrorMessage.Reset();
-        return;
-    }
-
-    VideoEncoder.Reset();
-    EncoderInput.Reset();
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    FScopeLock Lock(&EncoderCS);
 
     if (BitstreamFile)
     {
@@ -1206,8 +857,16 @@ void FOmniCaptureNVENCEncoder::Finalize()
         BitstreamFile.Reset();
     }
 
-    UE_LOG(LogTemp, Log, TEXT("NVENC finalize complete -> %s"), *OutputFilePath);
+    Bitstream.Release();
+    D3D11Input.Shutdown();
+    D3D12Input.Shutdown();
+    EncoderSession.Flush();
+    EncoderSession.Destroy();
+    AnnexB.Reset();
+    bCodecConfigWritten = false;
 #endif
+
     bInitialized = false;
     LastErrorMessage.Reset();
 }
+
