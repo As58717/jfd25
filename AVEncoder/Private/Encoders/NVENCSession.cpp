@@ -10,6 +10,14 @@
 
 #include "Misc/ScopeExit.h"
 
+#ifndef UE_NVENC_HAS_FLUSH_FUNCTION
+#if defined(NVENCAPI_MAJOR_VERSION) && NVENCAPI_MAJOR_VERSION < 12
+#define UE_NVENC_HAS_FLUSH_FUNCTION 1
+#else
+#define UE_NVENC_HAS_FLUSH_FUNCTION 0
+#endif
+#endif
+
 DEFINE_LOG_CATEGORY_STATIC(LogNVENCSession, Log, All);
 
 namespace AVEncoder
@@ -325,6 +333,7 @@ namespace AVEncoder
             return;
         }
 
+#if UE_NVENC_HAS_FLUSH_FUNCTION
         using TNvEncFlushEncoderQueue = NVENCSTATUS(NVENCAPI*)(void*, void*);
         TNvEncFlushEncoderQueue FlushEncoder = FunctionList.nvEncFlushEncoderQueue;
         if (FlushEncoder)
@@ -335,6 +344,7 @@ namespace AVEncoder
                 UE_LOG(LogNVENCSession, Warning, TEXT("NvEncFlushEncoderQueue returned %s"), *FNVENCDefs::StatusToString(Status));
             }
         }
+#endif
 #endif
     }
 

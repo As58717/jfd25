@@ -976,7 +976,10 @@ void FOmniCaptureNVENCEncoder::EnqueueFrame(const FOmniCaptureFrame& Frame)
 
     if (Frame.ReadyFence.IsValid())
     {
-        RHIWaitGPUFence(Frame.ReadyFence);
+        while (!Frame.ReadyFence->Poll())
+        {
+            FPlatformProcess::Sleep(0.0f);
+        }
     }
 
     if (Frame.bUsedCPUFallback)
