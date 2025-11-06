@@ -254,8 +254,9 @@ struct OMNICAPTURE_API FOmniCaptureSettings
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NVENC") bool bZeroCopy = true;
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NVENC", meta = (ClampMin = 0, UIMin = 0)) int32 RingBufferCapacity = 6;
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NVENC") EOmniCaptureRingBufferPolicy RingBufferPolicy = EOmniCaptureRingBufferPolicy::DropOldest;
-        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NVENC") FString AVEncoderModulePathOverride;
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NVENC") FString NVENCRuntimeDirectory;
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NVENC") FString NVENCDllPathOverride;
+        UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use NVENCRuntimeDirectory instead.")) FString AVEncoderModulePathOverride_DEPRECATED;
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output") bool bOpenPreviewOnFinalize = false;
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview") EOmniCapturePreviewView PreviewVisualization = EOmniCapturePreviewView::StereoComposite;
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Metadata") bool bGenerateManifest = true;
@@ -291,6 +292,27 @@ struct OMNICAPTURE_API FOmniCaptureSettings
         float GetLongitudeSpanRadians() const;
         float GetLatitudeSpanRadians() const;
         FString GetImageFileExtension() const;
+
+        FString GetEffectiveNVENCRuntimeDirectory() const
+        {
+            return !NVENCRuntimeDirectory.IsEmpty() ? NVENCRuntimeDirectory : AVEncoderModulePathOverride_DEPRECATED;
+        }
+
+        void SetNVENCRuntimeDirectory(const FString& InDirectory)
+        {
+            NVENCRuntimeDirectory = InDirectory;
+            AVEncoderModulePathOverride_DEPRECATED.Empty();
+        }
+
+        void MigrateDeprecatedOverrides()
+        {
+            if (NVENCRuntimeDirectory.IsEmpty() && !AVEncoderModulePathOverride_DEPRECATED.IsEmpty())
+            {
+                NVENCRuntimeDirectory = AVEncoderModulePathOverride_DEPRECATED;
+            }
+
+            AVEncoderModulePathOverride_DEPRECATED.Empty();
+        }
 };
 
 USTRUCT()
