@@ -2,6 +2,8 @@
 
 #include "NVENC/NVENCCaps.h"
 
+#if WITH_OMNI_NVENC
+
 #include "NVENC/NVEncodeAPILoader.h"
 #include "NVENC/NVENCDefs.h"
 #include "NVENC/NVENCSession.h"
@@ -142,4 +144,22 @@ namespace OmniNVENC
             Caps.MaxHeight);
     }
 }
+
+#else
+
+namespace OmniNVENC
+{
+    bool FNVENCCaps::Query(ENVENCCodec, FNVENCCapabilities& OutCapabilities)
+    {
+        OutCapabilities = FNVENCCapabilities();
+        return false;
+    }
+
+    FString FNVENCCaps::ToDebugString(const FNVENCCapabilities& Caps)
+    {
+        return FString::Printf(TEXT("NVENC disabled (Max %dx%d)"), Caps.MaxWidth, Caps.MaxHeight);
+    }
+}
+
+#endif // WITH_OMNI_NVENC
 

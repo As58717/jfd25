@@ -2,6 +2,8 @@
 
 #include "NVENC/NVEncodeAPILoader.h"
 
+#if WITH_OMNI_NVENC
+
 #include "NVENC/NVENCCommon.h"
 
 #include "Containers/StringConv.h"
@@ -197,5 +199,40 @@ namespace OmniNVENC
         Functions = FFunctions();
         bLoaded = false;
     }
+#else
+
+namespace OmniNVENC
+{
+    FNVEncodeAPILoader& FNVEncodeAPILoader::Get()
+    {
+        static FNVEncodeAPILoader Instance;
+        return Instance;
+    }
+
+    bool FNVEncodeAPILoader::Load()
+    {
+        bAttemptedLoad = true;
+        bLoaded = false;
+        return false;
+    }
+
+    void FNVEncodeAPILoader::Unload()
+    {
+        Reset();
+    }
+
+    void* FNVEncodeAPILoader::GetFunction(const ANSICHAR*) const
+    {
+        return nullptr;
+    }
+
+    void FNVEncodeAPILoader::Reset()
+    {
+        bAttemptedLoad = false;
+        bLoaded = false;
+        Functions = FFunctions();
+    }
 }
+
+#endif // WITH_OMNI_NVENC
 

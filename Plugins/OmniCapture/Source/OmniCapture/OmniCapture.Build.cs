@@ -82,25 +82,36 @@ public class OmniCapture : ModuleRules
                 "D3D12RHI"
             });
 
-            PrivateDefinitions.Add("WITH_OMNI_NVENC=1");
+            bool bWithNvenc = false;
 
             string rootDirectory = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../../../"));
             string interfaceDirectory = Path.Combine(rootDirectory, "Interface");
-            if (Directory.Exists(interfaceDirectory))
+            string libDirectory = Path.Combine(rootDirectory, "Lib", "x64");
+
+            string nvencHeader = Path.Combine(interfaceDirectory, "nvEncodeAPI.h");
+            string nvencLib = Path.Combine(libDirectory, "nvencodeapi.lib");
+            string nvcuvidLib = Path.Combine(libDirectory, "nvcuvid.lib");
+
+            if (File.Exists(nvencHeader) && File.Exists(nvencLib) && File.Exists(nvcuvidLib))
             {
+                bWithNvenc = true;
+
                 PublicIncludePaths.Add(interfaceDirectory);
                 PublicSystemIncludePaths.Add(interfaceDirectory);
-            }
 
-            string libDirectory = Path.Combine(rootDirectory, "Lib", "x64");
-            if (Directory.Exists(libDirectory))
+                PublicAdditionalLibraries.Add(nvencLib);
+                PublicAdditionalLibraries.Add(nvcuvidLib);
+
+                PublicDelayLoadDLLs.Add("nvEncodeAPI64.dll");
+            }
+            else
             {
-                PublicAdditionalLibraries.Add(Path.Combine(libDirectory, "nvencodeapi.lib"));
-                PublicAdditionalLibraries.Add(Path.Combine(libDirectory, "nvcuvid.lib"));
+                System.Console.WriteLine("OmniCapture: NVENC SDK not found – NVENC support will be disabled.");
             }
 
             PublicAdditionalLibraries.Add("d3d11.lib");
-            PublicDelayLoadDLLs.Add("nvEncodeAPI64.dll");
+
+            PrivateDefinitions.Add($"WITH_OMNI_NVENC={(bWithNvenc ? 1 : 0)}");
 
             // Ensure the expected project binaries directory exists before the linker writes outputs.
             if (Target.ProjectFile != null)

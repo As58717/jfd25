@@ -2,6 +2,8 @@
 
 #include "NVENC/NVENCInputD3D11.h"
 
+#if WITH_OMNI_NVENC
+
 #include "NVENC/NVENCSession.h"
 #include "NVENC/NVENCDefs.h"
 #include "Logging/LogMacros.h"
@@ -247,4 +249,6 @@ namespace OmniNVENC
 #endif
     }
 }
+
+#endif // WITH_OMNI_NVENC
 

@@ -2,6 +2,8 @@
 
 #include "NVENC/NVENCBitstream.h"
 
+#if WITH_OMNI_NVENC
+
 #include "NVENC/NVENCDefs.h"
 #include "Logging/LogMacros.h"
 
@@ -195,4 +197,6 @@ namespace OmniNVENC
 #endif
     }
 }
+
+#endif // WITH_OMNI_NVENC
 
