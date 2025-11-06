@@ -91,7 +91,7 @@ namespace
         return OverridePath;
     }
 
-    FString& GetModuleOverridePath()
+    FString& GetRuntimeDirectoryOverride()
     {
         static FString OverridePath;
         return OverridePath;
@@ -109,9 +109,9 @@ namespace
         return Result;
     }
 
-    FString ResolveModuleOverrideDirectory()
+    FString ResolveRuntimeDirectoryOverride()
     {
-        FString OverridePath = NormalizePath(GetModuleOverridePath());
+        FString OverridePath = NormalizePath(GetRuntimeDirectoryOverride());
         if (OverridePath.IsEmpty())
         {
             return FString();
@@ -144,19 +144,58 @@ namespace
         return OverridePath;
     }
 
+    FString FindBundledRuntimeDirectory()
+    {
+#if PLATFORM_WINDOWS
+        if (const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("OmniCapture")))
+        {
+            const FString BaseDir = Plugin->GetBaseDir();
+            TArray<FString> CandidateDirectories;
+            CandidateDirectories.Add(FPaths::Combine(BaseDir, TEXT("Binaries/Win64")));
+            CandidateDirectories.Add(FPaths::Combine(BaseDir, TEXT("Binaries")));
+            CandidateDirectories.Add(FPaths::Combine(BaseDir, TEXT("Binaries/ThirdParty/Win64")));
+            CandidateDirectories.Add(FPaths::Combine(BaseDir, TEXT("ThirdParty/NVENC/Win64")));
+            CandidateDirectories.Add(FPaths::Combine(BaseDir, TEXT("ThirdParty/NVENC")));
+
+#if PLATFORM_64BITS
+            const FString DllName = TEXT("nvEncodeAPI64.dll");
+#else
+            const FString DllName = TEXT("nvEncodeAPI.dll");
+#endif
+
+            for (const FString& CandidateDirectory : CandidateDirectories)
+            {
+                if (CandidateDirectory.IsEmpty())
+                {
+                    continue;
+                }
+
+                const FString AbsoluteDirectory = FPaths::ConvertRelativePathToFull(CandidateDirectory);
+                const FString CandidateDllPath = FPaths::Combine(AbsoluteDirectory, DllName);
+                if (FPaths::FileExists(CandidateDllPath))
+                {
+                    FString NormalizedDirectory = AbsoluteDirectory;
+                    FPaths::NormalizeDirectoryName(NormalizedDirectory);
+                    return NormalizedDirectory;
+                }
+            }
+        }
+#endif
+        return FString();
+    }
+
     void ApplyRuntimeOverrides()
     {
-        const FString ModuleDirectory = ResolveModuleOverrideDirectory();
-        if (!ModuleDirectory.IsEmpty())
+        FString RuntimeDirectory = ResolveRuntimeDirectoryOverride();
+        if (RuntimeDirectory.IsEmpty())
         {
-            FNVENCCommon::SetSearchDirectory(ModuleDirectory);
+            RuntimeDirectory = FindBundledRuntimeDirectory();
         }
 
+        FNVENCCommon::SetSearchDirectory(RuntimeDirectory);
+
         const FString DllPath = ResolveDllOverridePath();
-        if (!DllPath.IsEmpty())
-        {
-            FNVENCCommon::SetOverrideDllPath(DllPath);
-        }
+        FNVENCCommon::SetOverrideDllPath(DllPath);
     }
 
     ERHIInterfaceType GetCurrentRHIType()
@@ -455,10 +494,10 @@ bool FOmniCaptureNVENCEncoder::SupportsZeroCopyRHI()
 #endif
 }
 
-void FOmniCaptureNVENCEncoder::SetModuleOverridePath(const FString& InOverridePath)
+void FOmniCaptureNVENCEncoder::SetRuntimeDirectoryOverride(const FString& InOverridePath)
 {
 #if PLATFORM_WINDOWS && OMNI_WITH_NVENC
-    GetModuleOverridePath() = InOverridePath;
+    GetRuntimeDirectoryOverride() = InOverridePath;
     InvalidateCachedCapabilities();
 #else
     (void)InOverridePath;
