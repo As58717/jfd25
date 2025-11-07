@@ -129,12 +129,10 @@ namespace OmniNVENC
         }
 
         using TNvEncodeAPICreateInstance = NVENCSTATUS(NVENCAPI*)(NV_ENCODE_API_FUNCTION_LIST*);
-        using TNvEncOpenEncodeSessionEx = NVENCSTATUS(NVENCAPI*)(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS*, void**);
 
         TNvEncodeAPICreateInstance CreateInstance = reinterpret_cast<TNvEncodeAPICreateInstance>(Loader.GetFunctions().NvEncodeAPICreateInstance);
-        TNvEncOpenEncodeSessionEx OpenSession = reinterpret_cast<TNvEncOpenEncodeSessionEx>(Loader.GetFunctions().NvEncOpenEncodeSessionEx);
 
-        if (!ValidateFunction("NvEncodeAPICreateInstance", CreateInstance) || !ValidateFunction("NvEncOpenEncodeSessionEx", OpenSession))
+        if (!ValidateFunction("NvEncodeAPICreateInstance", CreateInstance))
         {
             return false;
         }
@@ -146,6 +144,14 @@ namespace OmniNVENC
         if (Status != NV_ENC_SUCCESS)
         {
             UE_LOG(LogNVENCSession, Error, TEXT("NvEncodeAPICreateInstance failed: %s"), *FNVENCDefs::StatusToString(Status));
+            return false;
+        }
+
+        using TNvEncOpenEncodeSessionEx = NVENCSTATUS(NVENCAPI*)(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS*, void**);
+        TNvEncOpenEncodeSessionEx OpenSession = reinterpret_cast<TNvEncOpenEncodeSessionEx>(FunctionList.nvEncOpenEncodeSessionEx);
+
+        if (!ValidateFunction("NvEncOpenEncodeSessionEx", OpenSession))
+        {
             return false;
         }
 

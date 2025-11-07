@@ -111,31 +111,6 @@ namespace OmniNVENC
 
         const FFunctionLookup Lookups[] = {
             { "NvEncodeAPICreateInstance", &Functions.NvEncodeAPICreateInstance },
-            { "NvEncOpenEncodeSessionEx", &Functions.NvEncOpenEncodeSessionEx },
-            { "NvEncInitializeEncoder", &Functions.NvEncInitializeEncoder },
-            { "NvEncReconfigureEncoder", &Functions.NvEncReconfigureEncoder },
-            { "NvEncEncodePicture", &Functions.NvEncEncodePicture },
-            { "NvEncDestroyEncoder", &Functions.NvEncDestroyEncoder },
-#if UE_NVENC_HAS_FLUSH_FUNCTION
-            { "NvEncFlushEncoderQueue", &Functions.NvEncFlushEncoderQueue },
-#endif
-            { "NvEncGetEncodeCaps", &Functions.NvEncGetEncodeCaps },
-            { "NvEncGetEncodePresetGUIDs", &Functions.NvEncGetEncodePresetGUIDs },
-            { "NvEncGetEncodeProfileGUIDs", &Functions.NvEncGetEncodeProfileGUIDs },
-            { "NvEncGetEncodePresetConfig", &Functions.NvEncGetEncodePresetConfig },
-            { "NvEncCreateInputBuffer", &Functions.NvEncCreateInputBuffer },
-            { "NvEncDestroyInputBuffer", &Functions.NvEncDestroyInputBuffer },
-            { "NvEncCreateBitstreamBuffer", &Functions.NvEncCreateBitstreamBuffer },
-            { "NvEncDestroyBitstreamBuffer", &Functions.NvEncDestroyBitstreamBuffer },
-            { "NvEncRegisterResource", &Functions.NvEncRegisterResource },
-            { "NvEncUnregisterResource", &Functions.NvEncUnregisterResource },
-            { "NvEncMapInputResource", &Functions.NvEncMapInputResource },
-            { "NvEncUnmapInputResource", &Functions.NvEncUnmapInputResource },
-            { "NvEncLockInputBuffer", &Functions.NvEncLockInputBuffer },
-            { "NvEncUnlockInputBuffer", &Functions.NvEncUnlockInputBuffer },
-            { "NvEncLockBitstream", &Functions.NvEncLockBitstream },
-            { "NvEncUnlockBitstream", &Functions.NvEncUnlockBitstream },
-            { "NvEncGetSequenceParams", &Functions.NvEncGetSequenceParams },
         };
 
         if (!ResolveFunctions(LibraryHandle, Lookups))
@@ -164,31 +139,6 @@ namespace OmniNVENC
 
         const FFunctionLookup Lookups[] = {
             { "NvEncodeAPICreateInstance", const_cast<void**>(&Functions.NvEncodeAPICreateInstance) },
-            { "NvEncOpenEncodeSessionEx", const_cast<void**>(&Functions.NvEncOpenEncodeSessionEx) },
-            { "NvEncInitializeEncoder", const_cast<void**>(&Functions.NvEncInitializeEncoder) },
-            { "NvEncReconfigureEncoder", const_cast<void**>(&Functions.NvEncReconfigureEncoder) },
-            { "NvEncEncodePicture", const_cast<void**>(&Functions.NvEncEncodePicture) },
-            { "NvEncDestroyEncoder", const_cast<void**>(&Functions.NvEncDestroyEncoder) },
-#if UE_NVENC_HAS_FLUSH_FUNCTION
-            { "NvEncFlushEncoderQueue", const_cast<void**>(&Functions.NvEncFlushEncoderQueue) },
-#endif
-            { "NvEncGetEncodeCaps", const_cast<void**>(&Functions.NvEncGetEncodeCaps) },
-            { "NvEncGetEncodePresetGUIDs", const_cast<void**>(&Functions.NvEncGetEncodePresetGUIDs) },
-            { "NvEncGetEncodeProfileGUIDs", const_cast<void**>(&Functions.NvEncGetEncodeProfileGUIDs) },
-            { "NvEncGetEncodePresetConfig", const_cast<void**>(&Functions.NvEncGetEncodePresetConfig) },
-            { "NvEncCreateInputBuffer", const_cast<void**>(&Functions.NvEncCreateInputBuffer) },
-            { "NvEncDestroyInputBuffer", const_cast<void**>(&Functions.NvEncDestroyInputBuffer) },
-            { "NvEncCreateBitstreamBuffer", const_cast<void**>(&Functions.NvEncCreateBitstreamBuffer) },
-            { "NvEncDestroyBitstreamBuffer", const_cast<void**>(&Functions.NvEncDestroyBitstreamBuffer) },
-            { "NvEncRegisterResource", const_cast<void**>(&Functions.NvEncRegisterResource) },
-            { "NvEncUnregisterResource", const_cast<void**>(&Functions.NvEncUnregisterResource) },
-            { "NvEncMapInputResource", const_cast<void**>(&Functions.NvEncMapInputResource) },
-            { "NvEncUnmapInputResource", const_cast<void**>(&Functions.NvEncUnmapInputResource) },
-            { "NvEncLockInputBuffer", const_cast<void**>(&Functions.NvEncLockInputBuffer) },
-            { "NvEncUnlockInputBuffer", const_cast<void**>(&Functions.NvEncUnlockInputBuffer) },
-            { "NvEncLockBitstream", const_cast<void**>(&Functions.NvEncLockBitstream) },
-            { "NvEncUnlockBitstream", const_cast<void**>(&Functions.NvEncUnlockBitstream) },
-            { "NvEncGetSequenceParams", const_cast<void**>(&Functions.NvEncGetSequenceParams) },
         };
 
         for (const FFunctionLookup& Lookup : Lookups)
