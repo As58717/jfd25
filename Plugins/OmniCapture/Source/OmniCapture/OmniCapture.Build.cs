@@ -92,7 +92,42 @@ public class OmniCapture : ModuleRules
             string nvencLib = Path.Combine(libDirectory, "nvencodeapi.lib");
             string nvcuvidLib = Path.Combine(libDirectory, "nvcuvid.lib");
 
-            if (File.Exists(nvencHeader) && File.Exists(nvencLib) && File.Exists(nvcuvidLib))
+            List<string> missingDependencies = new List<string>();
+
+            if (!Directory.Exists(nvencDirectory))
+            {
+                missingDependencies.Add($"NVENC root directory: {nvencDirectory}");
+            }
+            else
+            {
+                if (!Directory.Exists(interfaceDirectory))
+                {
+                    missingDependencies.Add($"NVENC include directory: {interfaceDirectory}");
+                }
+                else if (!File.Exists(nvencHeader))
+                {
+                    missingDependencies.Add($"Header nvEncodeAPI.h (expected at {nvencHeader})");
+                }
+
+                if (!Directory.Exists(libDirectory))
+                {
+                    missingDependencies.Add($"NVENC library directory: {libDirectory}");
+                }
+                else
+                {
+                    if (!File.Exists(nvencLib))
+                    {
+                        missingDependencies.Add($"Library nvencodeapi.lib (expected at {nvencLib})");
+                    }
+
+                    if (!File.Exists(nvcuvidLib))
+                    {
+                        missingDependencies.Add($"Library nvcuvid.lib (expected at {nvcuvidLib})");
+                    }
+                }
+            }
+
+            if (missingDependencies.Count == 0)
             {
                 bWithNvenc = true;
 
@@ -106,7 +141,11 @@ public class OmniCapture : ModuleRules
             }
             else
             {
-                System.Console.WriteLine("OmniCapture: NVENC SDK not found – NVENC support will be disabled.");
+                System.Console.WriteLine("OmniCapture: NVENC support disabled – missing dependencies:");
+                foreach (string missingDependency in missingDependencies)
+                {
+                    System.Console.WriteLine($"  - {missingDependency}");
+                }
             }
 
             PublicAdditionalLibraries.Add("d3d11.lib");
