@@ -1126,13 +1126,15 @@ void UOmniCaptureSubsystem::FinalizeOutputs(bool bFinalizeOutputs)
         OutputMuxer->Initialize(SegmentSettings, Segment.Directory);
         OutputMuxer->BeginRealtimeSession(SegmentSettings);
 
+        const bool bMuxingExpected = SegmentSettings.OutputFormat != EOmniOutputFormat::ImageSequence;
+        const bool bFallbackFromNVENC = (OriginalSettings.OutputFormat == EOmniOutputFormat::NVENCHardware && SegmentSettings.OutputFormat == EOmniOutputFormat::ImageSequence);
         const bool bSuccess = OutputMuxer->FinalizeCapture(SegmentSettings, Segment.Frames, Segment.AudioPath, Segment.VideoPath, Segment.DroppedFrames);
         OutputMuxer->EndRealtimeSession();
 
         const FString FinalVideoPath = Segment.Directory / (Segment.BaseFileName + TEXT(".mp4"));
-        const bool bFinalFileExists = FPaths::FileExists(FinalVideoPath);
+        const bool bFinalFileExists = bMuxingExpected ? FPaths::FileExists(FinalVideoPath) : true;
 
-        if (!bSuccess || !bFinalFileExists)
+        if (!bSuccess || (bMuxingExpected && !bFinalFileExists))
         {
             LogDiagnosticMessage(ELogVerbosity::Warning, TEXT("FinalizeOutputs"), FString::Printf(TEXT("Output muxing failed for segment %d. Check OmniCapture manifest for details."), Segment.SegmentIndex));
             if (Segment.bHasImageSequence)
@@ -1142,19 +1144,38 @@ void UOmniCaptureSubsystem::FinalizeOutputs(bool bFinalizeOutputs)
                 {
                     LastImageSequenceFallbackDirectory = Segment.Directory;
                 }
-                bLastCaptureUsedImageSequenceFallback = true;
+                if (OriginalSettings.OutputFormat == EOmniOutputFormat::NVENCHardware)
+                {
+                    bLastCaptureUsedImageSequenceFallback = true;
+                }
             }
             else
             {
                 LogDiagnosticMessage(ELogVerbosity::Warning, TEXT("FinalizeOutputs"), TEXT("No image sequence fallback was recorded for this segment."));
             }
         }
-        else if (Segment.bHasImageSequence && ActiveSettings.OutputFormat == EOmniOutputFormat::NVENCHardware)
+        else if (Segment.bHasImageSequence)
         {
-            AppendDiagnostic(EOmniCaptureDiagnosticLevel::Info, FString::Printf(TEXT("Image sequence fallback saved alongside NVENC output in %s."), *Segment.Directory), TEXT("FinalizeOutputs"));
+            if (!bMuxingExpected)
+            {
+                const ELogVerbosity::Type Verbosity = bFallbackFromNVENC ? ELogVerbosity::Warning : ELogVerbosity::Log;
+                LogDiagnosticMessage(Verbosity, TEXT("FinalizeOutputs"), FString::Printf(TEXT("Image sequence frames saved to %s with base name %s."), *Segment.Directory, *Segment.BaseFileName));
+                if (LastImageSequenceFallbackDirectory.IsEmpty())
+                {
+                    LastImageSequenceFallbackDirectory = Segment.Directory;
+                }
+                if (bFallbackFromNVENC)
+                {
+                    bLastCaptureUsedImageSequenceFallback = true;
+                }
+            }
+            else if (SegmentSettings.OutputFormat == EOmniOutputFormat::NVENCHardware)
+            {
+                AppendDiagnostic(EOmniCaptureDiagnosticLevel::Info, FString::Printf(TEXT("Image sequence fallback saved alongside NVENC output in %s."), *Segment.Directory), TEXT("FinalizeOutputs"));
+            }
         }
 
-        LastFinalizedOutput = (bSuccess && bFinalFileExists) ? FinalVideoPath : FString();
+        LastFinalizedOutput = (bSuccess && bMuxingExpected && bFinalFileExists) ? FinalVideoPath : FString();
         if (!LastFinalizedOutput.IsEmpty())
         {
             AppendDiagnostic(EOmniCaptureDiagnosticLevel::Info, FString::Printf(TEXT("Muxed output ready: %s"), *LastFinalizedOutput), TEXT("FinalizeOutputs"));

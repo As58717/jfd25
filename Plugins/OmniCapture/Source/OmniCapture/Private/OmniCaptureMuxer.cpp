@@ -470,16 +470,18 @@ bool FOmniCaptureMuxer::TryInvokeFFmpeg(const FOmniCaptureSettings& Settings, co
         return false;
     }
 
+    const bool bImageSequenceOutput = IsImageSequenceFormat(Settings.OutputFormat);
+
     const FString Binary = CachedFFmpegPath.IsEmpty() ? BuildFFmpegBinaryPath() : CachedFFmpegPath;
     if (Binary.IsEmpty())
     {
         UE_LOG(LogTemp, Warning, TEXT("FFmpeg not configured. Skipping automatic muxing."));
-        return false;
+        return bImageSequenceOutput;
     }
     if (!Binary.Equals(TEXT("ffmpeg"), ESearchCase::IgnoreCase) && !FPaths::FileExists(Binary))
     {
         UE_LOG(LogTemp, Warning, TEXT("FFmpeg binary %s was not found on disk."), *Binary);
-        return false;
+        return bImageSequenceOutput;
     }
 
     const double FrameRate = CalculateFrameRate(Frames);
@@ -511,7 +513,7 @@ bool FOmniCaptureMuxer::TryInvokeFFmpeg(const FOmniCaptureSettings& Settings, co
     FString OutputFile = OutputDirectory / (BaseFileName + TEXT(".mp4"));
     FString CommandLine;
 
-    if (IsImageSequenceFormat(Settings.OutputFormat))
+    if (bImageSequenceOutput)
     {
         const FString Extension = Settings.GetImageFileExtension();
         FString Pattern = OutputDirectory / FString::Printf(TEXT("%s_%%06d%s"), *BaseFileName, *Extension);
