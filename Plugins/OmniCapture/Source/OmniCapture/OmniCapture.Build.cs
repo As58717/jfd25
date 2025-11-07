@@ -82,8 +82,6 @@ public class OmniCapture : ModuleRules
                 "D3D12RHI"
             });
 
-            bool bWithNvenc = false;
-
             string nvencDirectory = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../ThirdParty/NVENC"));
             string interfaceDirectory = Path.Combine(nvencDirectory, "Interface");
             string libDirectory = Path.Combine(nvencDirectory, "Lib", "Win64");
@@ -129,8 +127,6 @@ public class OmniCapture : ModuleRules
 
             if (missingDependencies.Count == 0)
             {
-                bWithNvenc = true;
-
                 PublicIncludePaths.Add(interfaceDirectory);
                 PublicSystemIncludePaths.Add(interfaceDirectory);
 
@@ -150,7 +146,7 @@ public class OmniCapture : ModuleRules
 
             PublicAdditionalLibraries.Add("d3d11.lib");
 
-            PrivateDefinitions.Add($"WITH_OMNI_NVENC={(bWithNvenc ? 1 : 0)}");
+            PrivateDefinitions.Add("WITH_OMNI_NVENC=1");
 
             // Ensure the expected project binaries directory exists before the linker writes outputs.
             if (Target.ProjectFile != null)
