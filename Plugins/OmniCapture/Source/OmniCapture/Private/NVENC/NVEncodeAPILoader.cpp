@@ -10,6 +10,14 @@
 #include "HAL/PlatformProcess.h"
 #include "Logging/LogMacros.h"
 
+#if !defined(DEFINE_LOG_CATEGORY_STATIC)
+#define DEFINE_LOG_CATEGORY_STATIC(LogCategoryName, DefaultVerbosity, CompileTimeVerbosity)
+#endif
+
+#if !defined(UE_LOG)
+#define UE_LOG(CategoryName, Verbosity, Format, ...)
+#endif
+
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
 #endif
