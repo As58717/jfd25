@@ -280,10 +280,6 @@ namespace
             return false;
         }
         Device = LocalDevice;
-#else
-        OutFailureReason = TEXT("D3D11 support is required for NVENC probing in this build.");
-        return false;
-#endif
 
         FNVENCSession Session;
         if (!Session.Open(Codec, Device, NV_ENC_DEVICE_TYPE_DIRECTX))
@@ -321,6 +317,10 @@ namespace
 
         Session.Destroy();
         return true;
+#else
+        OutFailureReason = TEXT("D3D11 support is required for NVENC probing in this build.");
+        return false;
+#endif
 #endif
     }
 
