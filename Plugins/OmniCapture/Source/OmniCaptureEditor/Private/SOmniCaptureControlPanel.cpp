@@ -1232,7 +1232,7 @@ void SOmniCaptureControlPanel::Construct(const FArguments& InArgs)
             .OnCheckStateChanged(this, &SOmniCaptureControlPanel::HandleZeroCopyChanged)
             .IsEnabled_Lambda([this]()
             {
-                return GetSettingsSnapshot().OutputFormat == EOmniOutputFormat::NVENCHardware && FeatureAvailability.NVENC.bAvailable && FeatureAvailability.ZeroCopy.bAvailable;
+                return GetSettingsSnapshot().OutputFormat == EOmniOutputFormat::NVENCHardware;
             })
             .ToolTipText_Lambda([this]()
             {
