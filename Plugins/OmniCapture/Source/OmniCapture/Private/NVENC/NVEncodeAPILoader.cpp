@@ -199,6 +199,8 @@ namespace OmniNVENC
         Functions = FFunctions();
         bLoaded = false;
     }
+}
+
 #else
 
 namespace OmniNVENC
