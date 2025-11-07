@@ -85,10 +85,12 @@ public class OmniCapture : ModuleRules
             string nvencDirectory = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../ThirdParty/NVENC"));
             string interfaceDirectory = Path.Combine(nvencDirectory, "Interface");
             string libDirectory = Path.Combine(nvencDirectory, "Lib", "Win64");
+            string runtimeDirectory = Path.Combine(nvencDirectory, "Win64");
 
             string nvencHeader = Path.Combine(interfaceDirectory, "nvEncodeAPI.h");
             string nvencLib = Path.Combine(libDirectory, "nvencodeapi.lib");
             string nvcuvidLib = Path.Combine(libDirectory, "nvcuvid.lib");
+            string nvencDll = Path.Combine(runtimeDirectory, "nvEncodeAPI64.dll");
 
             List<string> missingDependencies = new List<string>();
 
@@ -123,6 +125,15 @@ public class OmniCapture : ModuleRules
                         missingDependencies.Add($"Library nvcuvid.lib (expected at {nvcuvidLib})");
                     }
                 }
+
+                if (!Directory.Exists(runtimeDirectory))
+                {
+                    missingDependencies.Add($"NVENC runtime directory: {runtimeDirectory}");
+                }
+                else if (!File.Exists(nvencDll))
+                {
+                    missingDependencies.Add($"Runtime nvEncodeAPI64.dll (expected at {nvencDll})");
+                }
             }
 
             if (missingDependencies.Count == 0)
@@ -134,6 +145,8 @@ public class OmniCapture : ModuleRules
                 PublicAdditionalLibraries.Add(nvcuvidLib);
 
                 PublicDelayLoadDLLs.Add("nvEncodeAPI64.dll");
+
+                RuntimeDependencies.Add(Path.Combine("$(PluginDir)", "ThirdParty", "NVENC", "Win64", "nvEncodeAPI64.dll"));
             }
             else
             {
