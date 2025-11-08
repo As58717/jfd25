@@ -29,16 +29,21 @@ DEFINE_LOG_CATEGORY_STATIC(LogOmniCaptureNVENC, Log, All);
 #if OMNI_WITH_NVENC
 #include "RHICommandList.h"
 #include "RHIResources.h"
-#if PLATFORM_WINDOWS && WITH_D3D11_RHI
+#if PLATFORM_WINDOWS
+#if WITH_D3D11_RHI
 #include "D3D11RHI.h"
+#endif
+#if WITH_D3D12_RHI
+#include "D3D12RHI.h"
+#endif
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "Windows/PreWindowsApi.h"
 #include <d3d11.h>
+#include <d3d11on12.h>
+#include <d3d12.h>
+#include <dxgi.h>
 #include "Windows/PostWindowsApi.h"
 #include "Windows/HideWindowsPlatformTypes.h"
-#endif
-#if PLATFORM_WINDOWS && WITH_D3D12_RHI
-#include "D3D12RHI.h"
 #endif
 #endif
 
@@ -255,6 +260,60 @@ namespace
         }
     }
 
+#if PLATFORM_WINDOWS && WITH_D3D12_RHI
+    bool CreateProbeD3D12Device(TRefCountPtr<ID3D12Device>& OutDevice, FString& OutFailureReason)
+    {
+        TRefCountPtr<IDXGIFactory1> DxgiFactory;
+        HRESULT Hr = CreateDXGIFactory1(IID_PPV_ARGS(DxgiFactory.GetInitReference()));
+        if (FAILED(Hr))
+        {
+            OutFailureReason = FString::Printf(TEXT("Failed to create DXGI factory for D3D12 probe (0x%08x)."), Hr);
+            return false;
+        }
+
+        for (UINT AdapterIndex = 0;; ++AdapterIndex)
+        {
+            TRefCountPtr<IDXGIAdapter1> Adapter;
+            Hr = DxgiFactory->EnumAdapters1(AdapterIndex, Adapter.GetInitReference());
+            if (Hr == DXGI_ERROR_NOT_FOUND)
+            {
+                break;
+            }
+
+            if (FAILED(Hr) || !Adapter.IsValid())
+            {
+                continue;
+            }
+
+            DXGI_ADAPTER_DESC1 AdapterDesc;
+            if (FAILED(Adapter->GetDesc1(&AdapterDesc)))
+            {
+                continue;
+            }
+
+            if ((AdapterDesc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+            {
+                continue;
+            }
+
+            Hr = D3D12CreateDevice(Adapter.GetReference(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(OutDevice.GetInitReference()));
+            if (SUCCEEDED(Hr))
+            {
+                return true;
+            }
+        }
+
+        Hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(OutDevice.GetInitReference()));
+        if (FAILED(Hr))
+        {
+            OutFailureReason = FString::Printf(TEXT("Failed to create probing D3D12 device (0x%08x)."), Hr);
+            return false;
+        }
+
+        return true;
+    }
+#endif // PLATFORM_WINDOWS && WITH_D3D12_RHI
+
     bool TryCreateProbeSession(ENVENCCodec Codec, ENVENCBufferFormat Format, FString& OutFailureReason)
     {
 #if !PLATFORM_WINDOWS
@@ -262,8 +321,11 @@ namespace
         return false;
 #else
         ID3D11Device* Device = nullptr;
+        TRefCountPtr<ID3D11Device> LocalDevice;
+        TRefCountPtr<ID3D11DeviceContext> LocalContext;
+
 #if WITH_D3D11_RHI
-        uint32 Flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        const uint32 Flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         const D3D_FEATURE_LEVEL FeatureLevels[] =
         {
             D3D_FEATURE_LEVEL_11_1,
@@ -271,15 +333,65 @@ namespace
             D3D_FEATURE_LEVEL_10_1,
             D3D_FEATURE_LEVEL_10_0
         };
-        TRefCountPtr<ID3D11Device> LocalDevice;
-        TRefCountPtr<ID3D11DeviceContext> LocalContext;
         HRESULT Hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, Flags, FeatureLevels, UE_ARRAY_COUNT(FeatureLevels), D3D11_SDK_VERSION, LocalDevice.GetInitReference(), nullptr, LocalContext.GetInitReference());
         if (FAILED(Hr))
         {
             OutFailureReason = FString::Printf(TEXT("Failed to create probing D3D11 device (0x%08x)."), Hr);
             return false;
         }
-        Device = LocalDevice;
+#elif WITH_D3D12_RHI
+        const D3D_FEATURE_LEVEL FeatureLevels[] =
+        {
+            D3D_FEATURE_LEVEL_12_1,
+            D3D_FEATURE_LEVEL_12_0,
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0
+        };
+
+        TRefCountPtr<ID3D12Device> D3D12Device;
+        if (!CreateProbeD3D12Device(D3D12Device, OutFailureReason))
+        {
+            return false;
+        }
+
+        D3D12_COMMAND_QUEUE_DESC QueueDesc = {};
+        QueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        QueueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        QueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+
+        TRefCountPtr<ID3D12CommandQueue> CommandQueue;
+        HRESULT Hr = D3D12Device->CreateCommandQueue(&QueueDesc, IID_PPV_ARGS(CommandQueue.GetInitReference()));
+        if (FAILED(Hr))
+        {
+            OutFailureReason = FString::Printf(TEXT("Failed to create D3D12 command queue for NVENC probe (0x%08x)."), Hr);
+            return false;
+        }
+
+        ID3D12CommandQueue* CommandQueues[] = { CommandQueue.GetReference() };
+
+        Hr = D3D11On12CreateDevice(
+            D3D12Device.GetReference(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            FeatureLevels,
+            UE_ARRAY_COUNT(FeatureLevels),
+            reinterpret_cast<IUnknown**>(CommandQueues),
+            UE_ARRAY_COUNT(CommandQueues),
+            0,
+            LocalDevice.GetInitReference(),
+            LocalContext.GetInitReference(),
+            nullptr);
+
+        if (FAILED(Hr))
+        {
+            OutFailureReason = FString::Printf(TEXT("D3D11On12CreateDevice failed during NVENC probe (0x%08x)."), Hr);
+            return false;
+        }
+#else
+        OutFailureReason = TEXT("D3D11 or D3D12 support is required for NVENC probing in this build.");
+        return false;
+#endif
+
+        Device = LocalDevice.GetReference();
 
         FNVENCSession Session;
         if (!Session.Open(Codec, Device, NV_ENC_DEVICE_TYPE_DIRECTX))
@@ -317,10 +429,6 @@ namespace
 
         Session.Destroy();
         return true;
-#else
-        OutFailureReason = TEXT("D3D11 support is required for NVENC probing in this build.");
-        return false;
-#endif
 #endif
     }
 
