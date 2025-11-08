@@ -6,6 +6,9 @@ public class OmniCaptureEditor : ModuleRules
     {
         PCHUsage = ModuleRules.PCHUsageMode.NoPCHs;
 
+        bUseUnity = false;
+        bUseAdaptiveUnityBuild = false;
+
         PublicDependencyModuleNames.AddRange(new string[]
         {
             "Core",
