@@ -320,6 +320,8 @@ namespace
         OutFailureReason = TEXT("NVENC probe requires Windows.");
         return false;
 #else
+
+#if WITH_D3D11_RHI || WITH_D3D12_RHI
         ID3D11Device* Device = nullptr;
         TRefCountPtr<ID3D11Device> LocalDevice;
         TRefCountPtr<ID3D11DeviceContext> LocalContext;
@@ -386,10 +388,7 @@ namespace
             OutFailureReason = FString::Printf(TEXT("D3D11On12CreateDevice failed during NVENC probe (0x%08x)."), Hr);
             return false;
         }
-#else
-        OutFailureReason = TEXT("D3D11 or D3D12 support is required for NVENC probing in this build.");
-        return false;
-#endif
+#endif // WITH_D3D11_RHI
 
         Device = LocalDevice.GetReference();
 
@@ -429,7 +428,12 @@ namespace
 
         Session.Destroy();
         return true;
-#endif
+#else
+        OutFailureReason = TEXT("D3D11 or D3D12 support is required for NVENC probing in this build.");
+        return false;
+#endif // WITH_D3D11_RHI || WITH_D3D12_RHI
+
+#endif // PLATFORM_WINDOWS
     }
 
     FNVENCHardwareProbeResult RunNVENCHardwareProbe()
