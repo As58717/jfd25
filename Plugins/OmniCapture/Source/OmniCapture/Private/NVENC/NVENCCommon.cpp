@@ -45,6 +45,18 @@ namespace OmniNVENC
         return GetLoader().OverrideDllPath;
     }
 
+    FString FNVENCCommon::GetSearchDirectory()
+    {
+        FScopeLock Lock(&GetMutex());
+        return GetLoader().SearchDirectory;
+    }
+
+    FString FNVENCCommon::GetResolvedDllPath()
+    {
+        FScopeLock Lock(&GetMutex());
+        return ResolveDllPath();
+    }
+
     bool FNVENCCommon::EnsureLoaded()
     {
         FScopeLock Lock(&GetMutex());

@@ -30,6 +30,12 @@ namespace OmniNVENC
         /** Returns the currently configured override path. */
         static FString GetOverrideDllPath();
 
+        /** Returns the current search directory used for automatic runtime discovery, if any. */
+        static FString GetSearchDirectory();
+
+        /** Returns the resolved DLL path based on the current overrides. */
+        static FString GetResolvedDllPath();
+
     private:
         static FString ResolveDllPath();
         static FString GetDefaultDllName();

@@ -3,6 +3,7 @@
 #include "Logging/LogMacros.h"
 #include "ShaderCore.h"
 #include "Misc/Paths.h"
+#include "OmniCaptureNVENCEncoder.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogOmniCapture, Log, All);
 
@@ -18,6 +19,8 @@ public:
             const FString ShaderDirectory = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders"));
             AddShaderSourceDirectoryMapping(TEXT("/Plugin/OmniCapture"), ShaderDirectory);
         }
+
+        FOmniCaptureNVENCEncoder::LogRuntimeStatus();
     }
 
     virtual void ShutdownModule() override
