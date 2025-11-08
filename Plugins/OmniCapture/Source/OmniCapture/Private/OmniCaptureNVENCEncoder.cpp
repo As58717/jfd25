@@ -37,12 +37,11 @@ DEFINE_LOG_CATEGORY_STATIC(LogOmniCaptureNVENC, Log, All);
 #include "D3D12RHI.h"
 #endif
 #include "Windows/AllowWindowsPlatformTypes.h"
-#include "Windows/PreWindowsApi.h"
+#include "Windows/WindowsHWrapper.h"
 #include <d3d11.h>
 #include <d3d11on12.h>
 #include <d3d12.h>
 #include <dxgi.h>
-#include "Windows/PostWindowsApi.h"
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 #endif
