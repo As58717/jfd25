@@ -158,6 +158,8 @@ public class OmniCapture : ModuleRules
             }
 
             PublicAdditionalLibraries.Add("d3d11.lib");
+            PublicAdditionalLibraries.Add("d3d12.lib");
+            PublicAdditionalLibraries.Add("dxgi.lib");
 
             PrivateDefinitions.Add("WITH_OMNI_NVENC=1");
 
