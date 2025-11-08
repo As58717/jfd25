@@ -330,63 +330,101 @@ namespace
 
         FNVENCHardwareProbeResult Result;
 
+        const FString RuntimeOverride = ResolveRuntimeDirectoryOverride();
+        const FString BundledRuntime = FindBundledRuntimeDirectory();
+        const FString ActiveSearchDirectory = OmniNVENC::FNVENCCommon::GetSearchDirectory();
+        const FString DllOverride = ResolveDllOverridePath();
+        const FString ResolvedDllPath = OmniNVENC::FNVENCCommon::GetResolvedDllPath();
+        const bool bDllExists = !ResolvedDllPath.IsEmpty() && FPaths::FileExists(ResolvedDllPath);
+
+        UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe starting. Runtime override: %s, bundled runtime: %s, active search dir: %s, DLL override: %s, resolved DLL: %s%s"),
+            RuntimeOverride.IsEmpty() ? TEXT("<none>") : *RuntimeOverride,
+            BundledRuntime.IsEmpty() ? TEXT("<none>") : *BundledRuntime,
+            ActiveSearchDirectory.IsEmpty() ? TEXT("<none>") : *ActiveSearchDirectory,
+            DllOverride.IsEmpty() ? TEXT("<none>") : *DllOverride,
+            ResolvedDllPath.IsEmpty() ? TEXT("<none>") : *ResolvedDllPath,
+            bDllExists ? TEXT("") : TEXT(" (missing)"));
+
+        if (!bDllExists)
+        {
+            UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("Resolved NVENC runtime path does not exist. The encoder will be unavailable until the DLL is provided."));
+        }
+
         if (!FNVENCCommon::EnsureLoaded())
         {
             Result.DllFailureReason = TEXT("Unable to load nvEncodeAPI runtime.");
+            UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("NVENC probe failed to load runtime: %s"), *Result.DllFailureReason);
             return Result;
         }
 
         Result.bDllPresent = true;
+        UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe loaded runtime module successfully."));
 
         FNVEncodeAPILoader& Loader = FNVEncodeAPILoader::Get();
         if (!Loader.Load())
         {
             Result.ApiFailureReason = TEXT("Failed to resolve NVENC exports.");
+            UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("NVENC probe failed to resolve exports: %s"), *Result.ApiFailureReason);
             return Result;
         }
 
         Result.bApisReady = true;
+        UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe resolved exports successfully."));
 
         FString SessionFailure;
         if (!TryCreateProbeSession(ENVENCCodec::H264, ENVENCBufferFormat::NV12, SessionFailure))
         {
             Result.SessionFailureReason = SessionFailure;
+            UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("NVENC probe could not open a session: %s"), *Result.SessionFailureReason);
             return Result;
         }
 
         Result.bSessionOpenable = true;
         Result.bSupportsH264 = true;
         Result.bSupportsNV12 = true;
+        UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe opened H.264/NV12 session successfully."));
 
         FString Nv12Failure;
         if (TryCreateProbeSession(ENVENCCodec::H264, ENVENCBufferFormat::BGRA, Nv12Failure))
         {
             Result.bSupportsBGRA = true;
+            UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe verified BGRA upload support."));
         }
         else
         {
             Result.BGRAFailureReason = Nv12Failure;
+            UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("NVENC probe BGRA session failed: %s"), *Result.BGRAFailureReason);
         }
 
         FString HevcFailure;
         if (TryCreateProbeSession(ENVENCCodec::HEVC, ENVENCBufferFormat::NV12, HevcFailure))
         {
             Result.bSupportsHEVC = true;
+            UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe verified HEVC/NV12 support."));
         }
         else
         {
             Result.CodecFailureReason = HevcFailure;
+            UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("NVENC probe HEVC session failed: %s"), *Result.CodecFailureReason);
         }
 
         FString P010Failure;
         if (TryCreateProbeSession(ENVENCCodec::HEVC, ENVENCBufferFormat::P010, P010Failure))
         {
             Result.bSupportsP010 = true;
+            UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe verified HEVC/P010 support."));
         }
         else
         {
             Result.P010FailureReason = P010Failure;
+            UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("NVENC probe P010 session failed: %s"), *Result.P010FailureReason);
         }
+
+        UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe completed. HEVC:%s NV12:%s P010:%s BGRA:%s"),
+            Result.bSupportsHEVC ? TEXT("yes") : TEXT("no"),
+            Result.bSupportsNV12 ? TEXT("yes") : TEXT("no"),
+            Result.bSupportsP010 ? TEXT("yes") : TEXT("no"),
+            Result.bSupportsBGRA ? TEXT("yes") : TEXT("no"));
 
         return Result;
     }
@@ -537,6 +575,35 @@ void FOmniCaptureNVENCEncoder::InvalidateCachedCapabilities()
 #if PLATFORM_WINDOWS && OMNI_WITH_NVENC
     FScopeLock Lock(&GetProbeCacheMutex());
     GetProbeValidFlag() = false;
+#endif
+}
+
+void FOmniCaptureNVENCEncoder::LogRuntimeStatus()
+{
+#if PLATFORM_WINDOWS && OMNI_WITH_NVENC
+    ApplyRuntimeOverrides();
+
+    const FString RuntimeOverride = ResolveRuntimeDirectoryOverride();
+    const FString BundledRuntime = FindBundledRuntimeDirectory();
+    const FString ActiveSearchDirectory = OmniNVENC::FNVENCCommon::GetSearchDirectory();
+    const FString DllOverride = ResolveDllOverridePath();
+    const FString ResolvedDllPath = OmniNVENC::FNVENCCommon::GetResolvedDllPath();
+    const bool bDllExists = !ResolvedDllPath.IsEmpty() && FPaths::FileExists(ResolvedDllPath);
+
+    UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC runtime configuration. Runtime override: %s, bundled runtime: %s, active search dir: %s, DLL override: %s, resolved DLL: %s%s"),
+        RuntimeOverride.IsEmpty() ? TEXT("<none>") : *RuntimeOverride,
+        BundledRuntime.IsEmpty() ? TEXT("<none>") : *BundledRuntime,
+        ActiveSearchDirectory.IsEmpty() ? TEXT("<none>") : *ActiveSearchDirectory,
+        DllOverride.IsEmpty() ? TEXT("<none>") : *DllOverride,
+        ResolvedDllPath.IsEmpty() ? TEXT("<none>") : *ResolvedDllPath,
+        bDllExists ? TEXT("") : TEXT(" (missing)"));
+
+    if (!bDllExists)
+    {
+        UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("NVENC runtime DLL is missing at the resolved path. Encoding will fail until the file is supplied."));
+    }
+#else
+    UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC runtime logging is not available on this platform."));
 #endif
 }
 

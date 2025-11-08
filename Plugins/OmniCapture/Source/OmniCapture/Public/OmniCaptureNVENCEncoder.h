@@ -59,6 +59,7 @@ public:
     static void SetRuntimeDirectoryOverride(const FString& InOverridePath);
     static void SetDllOverridePath(const FString& InOverridePath);
     static void InvalidateCachedCapabilities();
+    static void LogRuntimeStatus();
 
     bool IsInitialized() const { return bInitialized; }
     FString GetOutputFilePath() const { return OutputFilePath; }
