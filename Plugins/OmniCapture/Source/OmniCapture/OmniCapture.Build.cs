@@ -147,6 +147,8 @@ public class OmniCapture : ModuleRules
                 PublicDelayLoadDLLs.Add("nvEncodeAPI64.dll");
 
                 RuntimeDependencies.Add(Path.Combine("$(PluginDir)", "ThirdParty", "NVENC", "Win64", "nvEncodeAPI64.dll"));
+
+                StageBundledRuntime(nvencDll);
             }
             else
             {
@@ -203,5 +205,42 @@ public class OmniCapture : ModuleRules
         }
 
         return string.Empty;
+    }
+
+    private void StageBundledRuntime(string sourceDll)
+    {
+        if (string.IsNullOrEmpty(sourceDll) || !File.Exists(sourceDll))
+        {
+            return;
+        }
+
+        string pluginRoot = Path.GetFullPath(Path.Combine(ModuleDirectory, "../.."));
+        string[] targetDirectories =
+        {
+            Path.Combine(pluginRoot, "Binaries", "Win64"),
+            Path.Combine(pluginRoot, "Binaries", "ThirdParty", "Win64"),
+        };
+
+        foreach (string targetDirectory in targetDirectories)
+        {
+            try
+            {
+                Directory.CreateDirectory(targetDirectory);
+
+                string destinationDll = Path.Combine(targetDirectory, Path.GetFileName(sourceDll));
+                if (!File.Exists(destinationDll) || new FileInfo(destinationDll).LastWriteTimeUtc < new FileInfo(sourceDll).LastWriteTimeUtc)
+                {
+                    File.Copy(sourceDll, destinationDll, overwrite: true);
+                }
+            }
+            catch (IOException)
+            {
+                // Suppress copy errors – the runtime dependency staging above is the authoritative path.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Ignore permission issues so builds do not fail when the destination is read-only.
+            }
+        }
     }
 }
