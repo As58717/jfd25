@@ -19,6 +19,13 @@
     #define OMNI_WITH_NVENC 0
 #endif
 
+struct FOmniNVENCPresetStatus
+{
+    FString Name;
+    bool bSupported = false;
+    FString FailureReason;
+};
+
 struct FOmniNVENCCapabilities
 {
     bool bHardwareAvailable = false;
@@ -40,6 +47,8 @@ struct FOmniNVENCCapabilities
     FString HardwareFailureReason;
     FString AdapterName;
     FString DriverVersion;
+    FString PresetFailureReason;
+    TArray<FOmniNVENCPresetStatus> PresetStatuses;
 };
 
 class OMNICAPTURE_API FOmniCaptureNVENCEncoder

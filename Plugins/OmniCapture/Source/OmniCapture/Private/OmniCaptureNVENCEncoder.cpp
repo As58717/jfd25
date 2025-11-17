@@ -69,6 +69,8 @@ namespace
         FString P010FailureReason;
         FString BGRAFailureReason;
         FString HardwareFailureReason;
+        FString PresetFailureReason;
+        TArray<FOmniNVENCPresetStatus> PresetStatuses;
     };
 
     FCriticalSection& GetProbeCacheMutex()
@@ -111,6 +113,27 @@ namespace
             FPaths::MakePlatformFilename(Result);
         }
         return Result;
+    }
+
+    GUID ToWindowsGuid(const FGuid& InGuid)
+    {
+        GUID Guid;
+        Guid.Data1 = static_cast<uint32>(InGuid.A);
+        Guid.Data2 = static_cast<uint16>((static_cast<uint32>(InGuid.B) >> 16) & 0xFFFF);
+        Guid.Data3 = static_cast<uint16>(static_cast<uint32>(InGuid.B) & 0xFFFF);
+
+        const uint32 C = static_cast<uint32>(InGuid.C);
+        const uint32 D = static_cast<uint32>(InGuid.D);
+
+        Guid.Data4[0] = static_cast<uint8>((C >> 24) & 0xFF);
+        Guid.Data4[1] = static_cast<uint8>((C >> 16) & 0xFF);
+        Guid.Data4[2] = static_cast<uint8>((C >> 8) & 0xFF);
+        Guid.Data4[3] = static_cast<uint8>(C & 0xFF);
+        Guid.Data4[4] = static_cast<uint8>((D >> 24) & 0xFF);
+        Guid.Data4[5] = static_cast<uint8>((D >> 16) & 0xFF);
+        Guid.Data4[6] = static_cast<uint8>((D >> 8) & 0xFF);
+        Guid.Data4[7] = static_cast<uint8>(D & 0xFF);
+        return Guid;
     }
 
     FString ResolveRuntimeDirectoryOverride()
@@ -435,6 +458,89 @@ namespace
 #endif // PLATFORM_WINDOWS
     }
 
+    bool ProbePresetSupport(ENVENCCodec Codec, TArray<FOmniNVENCPresetStatus>& OutStatuses, FString& OutFailureReason)
+    {
+#if PLATFORM_WINDOWS && WITH_D3D11_RHI
+        TRefCountPtr<ID3D11Device> Device;
+        TRefCountPtr<ID3D11DeviceContext> Context;
+
+        UINT DeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        const D3D_FEATURE_LEVEL FeatureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+        D3D_FEATURE_LEVEL CreatedLevel = D3D_FEATURE_LEVEL_11_0;
+
+        HRESULT Hr = D3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            DeviceFlags,
+            FeatureLevels,
+            UE_ARRAY_COUNT(FeatureLevels),
+            D3D11_SDK_VERSION,
+            Device.GetInitReference(),
+            &CreatedLevel,
+            Context.GetInitReference());
+
+        if (FAILED(Hr))
+        {
+            OutFailureReason = FString::Printf(TEXT("Failed to create D3D11 device for preset probe (0x%08x)."), Hr);
+            return false;
+        }
+
+        FNVENCSession Session;
+        if (!Session.Open(Codec, Device.GetReference(), NV_ENC_DEVICE_TYPE_DIRECTX))
+        {
+            OutFailureReason = TEXT("Unable to open NVENC session for preset probe.");
+            return false;
+        }
+
+        using TNvEncGetEncodePresetConfig = NVENCSTATUS(NVENCAPI*)(void*, GUID, GUID, NV_ENC_PRESET_CONFIG*);
+        TNvEncGetEncodePresetConfig GetPresetConfig = Session.GetFunctionList().nvEncGetEncodePresetConfig;
+        if (!GetPresetConfig)
+        {
+            OutFailureReason = TEXT("NvEncGetEncodePresetConfig export is unavailable.");
+            return false;
+        }
+
+        const GUID CodecGuid = ToWindowsGuid(FNVENCDefs::CodecGuid(Codec));
+        const TArray<TPair<FString, FGuid>> Presets = {
+            { TEXT("Default"), FNVENCDefs::PresetDefaultGuid() },
+            { TEXT("Low Latency HQ"), FNVENCDefs::PresetLowLatencyGuid() },
+            { TEXT("Preset P1"), FNVENCDefs::PresetP1Guid() },
+            { TEXT("Preset P2"), FNVENCDefs::PresetP2Guid() },
+            { TEXT("Preset P3"), FNVENCDefs::PresetP3Guid() },
+            { TEXT("Preset P4"), FNVENCDefs::PresetP4Guid() },
+            { TEXT("Preset P5"), FNVENCDefs::PresetP5Guid() },
+            { TEXT("Preset P6"), FNVENCDefs::PresetP6Guid() },
+            { TEXT("Preset P7"), FNVENCDefs::PresetP7Guid() },
+        };
+
+        for (const TPair<FString, FGuid>& Preset : Presets)
+        {
+            FOmniNVENCPresetStatus& StatusEntry = OutStatuses.AddDefaulted_GetRef();
+            StatusEntry.Name = Preset.Key;
+
+            NV_ENC_PRESET_CONFIG PresetConfig = {};
+            PresetConfig.version = NV_ENC_PRESET_CONFIG_VER;
+            PresetConfig.presetCfg.version = NV_ENC_CONFIG_VER;
+
+            NVENCSTATUS Status = GetPresetConfig(Session.GetEncoderHandle(), CodecGuid, ToWindowsGuid(Preset.Value), &PresetConfig);
+            if (Status == NV_ENC_SUCCESS)
+            {
+                StatusEntry.bSupported = true;
+            }
+            else
+            {
+                StatusEntry.FailureReason = FNVENCDefs::StatusToString(Status);
+            }
+        }
+
+        return true;
+#else
+        OutFailureReason = TEXT("D3D11 support is required to probe NVENC presets in this build.");
+        return false;
+#endif // PLATFORM_WINDOWS && WITH_D3D11_RHI
+    }
+
     FNVENCHardwareProbeResult RunNVENCHardwareProbe()
     {
         ApplyRuntimeOverrides();
@@ -531,6 +637,28 @@ namespace
             UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("NVENC probe P010 session failed: %s"), *Result.P010FailureReason);
         }
 
+        FString PresetFailure;
+        if (ProbePresetSupport(ENVENCCodec::H264, Result.PresetStatuses, PresetFailure))
+        {
+            UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC preset availability (H.264):"));
+            for (const FOmniNVENCPresetStatus& Status : Result.PresetStatuses)
+            {
+                if (Status.bSupported)
+                {
+                    UE_LOG(LogOmniCaptureNVENC, Display, TEXT("  - %s: supported"), *Status.Name);
+                }
+                else
+                {
+                    UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("  - %s: unavailable (%s)"), *Status.Name, Status.FailureReason.IsEmpty() ? TEXT("unknown") : *Status.FailureReason);
+                }
+            }
+        }
+        else
+        {
+            Result.PresetFailureReason = PresetFailure;
+            UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("NVENC preset probe failed: %s"), *Result.PresetFailureReason);
+        }
+
         UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe completed. HEVC:%s NV12:%s P010:%s BGRA:%s"),
             Result.bSupportsHEVC ? TEXT("yes") : TEXT("no"),
             Result.bSupportsNV12 ? TEXT("yes") : TEXT("no"),
@@ -593,6 +721,8 @@ FOmniNVENCCapabilities FOmniCaptureNVENCEncoder::QueryCapabilities()
     Caps.P010FailureReason = Probe.P010FailureReason;
     Caps.BGRAFailureReason = Probe.BGRAFailureReason;
     Caps.HardwareFailureReason = Probe.HardwareFailureReason;
+    Caps.PresetFailureReason = Probe.PresetFailureReason;
+    Caps.PresetStatuses = Probe.PresetStatuses;
 #else
     Caps.bHardwareAvailable = false;
     Caps.DllFailureReason = TEXT("NVENC is only available on Windows builds.");
